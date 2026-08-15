@@ -1,0 +1,14 @@
+dsh-cadence-standard includes an adapted copy of the DeepSeek Harness
+Standard agent preset from:
+
+  https://github.com/deepseek-ai/deepseek-harness
+  commit fb657eb447111d35848dd7b73e15d98c4e3673c6 (0.1.0-rc.6)
+
+DeepSeek Harness is distributed under the MIT License:
+
+  Copyright (c) 2026 DeepSeek
+
+The full MIT permission notice is included in this repository's LICENSE file.
+
+DeepSeek and DeepSeek Harness are names of their respective owner. This
+community project is not affiliated with or endorsed by DeepSeek.

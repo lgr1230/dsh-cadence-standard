@@ -1,0 +1,3 @@
+name: Cadence Standard (experimental)
+description: Thinking-budget pacing v2.3.1 — anchor first turn (zero-tool warm-up kills turn-1 truncation), budget-aware bands with truncation recovery, monotonic classification with error-report keywords, full platform profiles, plan-forward utilization, verified deadlock ladder (pause-and-ask-user), generic delegation advisor (read-only discipline; targeted numeric-review variant), settled-aware subagent timeout reminder, todo-sync advisor, gentle visual-depth deepening, trajectory-style diagnostics (trace_style); full Standard tools after promotion.
+order: 6
