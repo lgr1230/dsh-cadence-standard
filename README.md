@@ -95,9 +95,10 @@ fake Cordis context, plus pure-function tests for the core detection logic.
 
 ## Attribution
 
-This preset is an adapted derivative of the DeepSeek Harness Standard agent
-preset. See [NOTICE](./NOTICE) for the upstream reference
-(commit `fb657eb447`, release `0.1.0-rc.6`).
+This preset references
+[`yjh051108/dsh-router-standard`](https://github.com/yjh051108/dsh-router-standard)
+(MIT) for its preset structure, first-turn anchoring mechanism and
+agent-visible tuning approach. See [NOTICE](./NOTICE).
 
 ## License
 

@@ -80,7 +80,8 @@ npm run check   # 语法检查预设模块后运行测试
 
 ## 引用说明
 
-本预设为 DeepSeek Harness Standard agent 预设的改编衍生作品。上游引用详见 [NOTICE](./NOTICE)（commit `fb657eb447`，release `0.1.0-rc.6`）。
+本预设参考了 [`yjh051108/dsh-router-standard`](https://github.com/yjh051108/dsh-router-standard)
+（MIT）：其预设结构、首轮锚定机制与 agent 可见调优思路。详见 [NOTICE](./NOTICE)。
 
 ## 许可证
 
