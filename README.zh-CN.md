@@ -7,12 +7,6 @@
 
 这是一个社区项目，并非 DeepSeek 官方预设，与 DeepSeek 无隶属或背书关系。
 
-## 作者
-
-- **xiaobright** — 作者与维护者
-- GitHub：[lgr1230](https://github.com/lgr1230)
-- 联系：在本仓库提交 Issue
-
 ## 功能说明
 
 Cadence Standard 通过 agent pre-step 瀑布流注入静态、幂等的引导文本，并暴露两个只读诊断工具（`trace_status`、`trace_style`）与一个仅调节预算的工具（`trace_tune`）。预设本身**不注册任何 fs/shell/权限工具**。
