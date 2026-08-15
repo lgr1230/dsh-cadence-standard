@@ -87,6 +87,15 @@ npm run check   # syntax-check the preset modules, then run tests
 The suite exercises every listener the bootstrap registers against a minimal
 fake Cordis context, plus pure-function tests for the core detection logic.
 
+## Showcase test case
+
+[`lgr1230/dsh-gargantua`](https://github.com/lgr1230/dsh-gargantua) — a
+real-time Schwarzschild black hole raytracer built under this preset with
+DeepSeek V4 Pro Max. It is an outstanding acceptance case: **13/13 test
+cases PASS with zero console errors and zero failed requests**, frames
+VLM-reviewed at 8.5/10. See its
+[test report](https://github.com/lgr1230/dsh-gargantua/blob/main/test/TEST_REPORT.md).
+
 ## Attribution
 
 This preset references prior open work:
