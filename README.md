@@ -9,6 +9,12 @@ agent preset that paces the model's thinking budget across a session —
 This is a community project. It is not an official DeepSeek preset and is not
 affiliated with or endorsed by DeepSeek.
 
+## Author
+
+- **xiaobright** — author & maintainer
+- GitHub: [lgr1230](https://github.com/lgr1230)
+- Contact: open an issue on this repository
+
 ## Features
 
 Cadence Standard injects static, idempotent guidance into the agent pre-step
