@@ -9,6 +9,9 @@ prior open work:
   task-aware reasoning-mode router for DeepSeek Harness with three measured
   behavior bands (spec/mixed/react), phase-transition evidence, persona +
   first-turn tool injection, and agent-visible tuning.
+- The first-turn anchoring mechanism (zero-tool warm-up turn, narrow first
+  request) builds on the bootstrap filter in **xiaobright/dsh-anchored-standard**
+  (MIT): two-phase preset with minimal persona + shell/read bootstrap.
 
 DeepSeek is a trademark of its respective owner. This project is a community
 artifact and is not endorsed by DeepSeek.

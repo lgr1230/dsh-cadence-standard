@@ -95,10 +95,16 @@ fake Cordis context, plus pure-function tests for the core detection logic.
 
 ## Attribution
 
-This preset references
-[`yjh051108/dsh-router-standard`](https://github.com/yjh051108/dsh-router-standard)
-(MIT) for its preset structure, first-turn anchoring mechanism and
-agent-visible tuning approach. See [NOTICE](./NOTICE).
+This preset references prior open work:
+
+- [`yjh051108/dsh-router-standard`](https://github.com/yjh051108/dsh-router-standard)
+  (MIT) — preset structure, first-turn anchoring mechanism, agent-visible
+  tuning approach.
+- [`xiaobright/dsh-anchored-standard`](https://github.com/xiaobright/dsh-anchored-standard)
+  (MIT) — the first-turn anchoring mechanism (zero-tool warm-up turn, narrow
+  first request) builds on its bootstrap filter.
+
+See [NOTICE](./NOTICE).
 
 ## License
 

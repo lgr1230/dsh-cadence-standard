@@ -80,8 +80,12 @@ npm run check   # 语法检查预设模块后运行测试
 
 ## 引用说明
 
-本预设参考了 [`yjh051108/dsh-router-standard`](https://github.com/yjh051108/dsh-router-standard)
-（MIT）：其预设结构、首轮锚定机制与 agent 可见调优思路。详见 [NOTICE](./NOTICE)。
+本预设参考了以下开源工作：
+
+- [`yjh051108/dsh-router-standard`](https://github.com/yjh051108/dsh-router-standard)（MIT）——预设结构、首轮锚定机制与 agent 可见调优思路。
+- [`xiaobright/dsh-anchored-standard`](https://github.com/xiaobright/dsh-anchored-standard)（MIT）——首轮锚定机制（零工具热身轮、窄首请求）基于其 bootstrap filter。
+
+详见 [NOTICE](./NOTICE)。
 
 ## 许可证
 
