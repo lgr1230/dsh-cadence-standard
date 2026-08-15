@@ -102,5 +102,4 @@ See [NOTICE](./NOTICE).
 
 ## License
 
-[MIT](./LICENSE) — Copyright (c) 2026 xiaobright; Portions Copyright (c) 2026
-DeepSeek.
+[MIT](./LICENSE)

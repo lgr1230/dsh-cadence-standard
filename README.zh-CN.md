@@ -83,4 +83,4 @@ npm run check   # 语法检查预设模块后运行测试
 
 ## 许可证
 
-[MIT](./LICENSE) —— Copyright (c) 2026 xiaobright；部分 Copyright (c) 2026 DeepSeek。
+[MIT](./LICENSE)
