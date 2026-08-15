@@ -9,6 +9,19 @@ agent preset that paces the model's thinking budget across a session —
 This is a community project. It is not an official DeepSeek preset and is not
 affiliated with or endorsed by DeepSeek.
 
+## Attribution
+
+This preset references prior open work:
+
+- [`yjh051108/dsh-router-standard`](https://github.com/yjh051108/dsh-router-standard)
+  (MIT) — preset structure, first-turn anchoring mechanism, agent-visible
+  tuning approach.
+- [`xiaobright/dsh-anchored-standard`](https://github.com/xiaobright/dsh-anchored-standard)
+  (MIT) — the first-turn anchoring mechanism (zero-tool warm-up turn, narrow
+  first request) builds on its bootstrap filter.
+
+See [NOTICE](./NOTICE).
+
 ## Features
 
 Cadence Standard injects static, idempotent guidance into the agent pre-step
@@ -96,19 +109,6 @@ cases PASS with zero console errors and zero failed requests**, frames
 VLM-reviewed at 8.5/10. See its
 [test report](https://github.com/lgr1230/dsh-gargantua/blob/main/test/TEST_REPORT.md)
 ([中文版](https://github.com/lgr1230/dsh-gargantua/blob/main/test/TEST_REPORT.zh-CN.md)).
-
-## Attribution
-
-This preset references prior open work:
-
-- [`yjh051108/dsh-router-standard`](https://github.com/yjh051108/dsh-router-standard)
-  (MIT) — preset structure, first-turn anchoring mechanism, agent-visible
-  tuning approach.
-- [`xiaobright/dsh-anchored-standard`](https://github.com/xiaobright/dsh-anchored-standard)
-  (MIT) — the first-turn anchoring mechanism (zero-tool warm-up turn, narrow
-  first request) builds on its bootstrap filter.
-
-See [NOTICE](./NOTICE).
 
 ## License
 

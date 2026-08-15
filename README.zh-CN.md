@@ -7,6 +7,15 @@
 
 这是一个社区项目，并非 DeepSeek 官方预设，与 DeepSeek 无隶属或背书关系。
 
+## 引用说明
+
+本预设参考了以下开源工作：
+
+- [`yjh051108/dsh-router-standard`](https://github.com/yjh051108/dsh-router-standard)（MIT）——预设结构、首轮锚定机制与 agent 可见调优思路。
+- [`xiaobright/dsh-anchored-standard`](https://github.com/xiaobright/dsh-anchored-standard)（MIT）——首轮锚定机制（零工具热身轮、窄首请求）基于其 bootstrap filter。
+
+详见 [NOTICE](./NOTICE)。
+
 ## 功能说明
 
 Cadence Standard 通过 agent pre-step 瀑布流注入静态、幂等的引导文本，并暴露两个只读诊断工具（`trace_status`、`trace_style`）与一个仅调节预算的工具（`trace_tune`）。预设本身**不注册任何 fs/shell/权限工具**。
@@ -75,15 +84,6 @@ npm run check   # 语法检查预设模块后运行测试
 ## 优秀测试案例
 
 [`lgr1230/dsh-gargantua`](https://github.com/lgr1230/dsh-gargantua) —— 在本预设 + DeepSeek V4 Pro Max 下构建的实时 Schwarzschild 黑洞光线追踪器，效果优秀的验收案例：**13/13 用例全部 PASS，零控制台错误、零失败请求**，画面经 VLM 评审 8.5/10。详见其[测试报告（中文）](https://github.com/lgr1230/dsh-gargantua/blob/main/test/TEST_REPORT.zh-CN.md)（[English](https://github.com/lgr1230/dsh-gargantua/blob/main/test/TEST_REPORT.md)）。
-
-## 引用说明
-
-本预设参考了以下开源工作：
-
-- [`yjh051108/dsh-router-standard`](https://github.com/yjh051108/dsh-router-standard)（MIT）——预设结构、首轮锚定机制与 agent 可见调优思路。
-- [`xiaobright/dsh-anchored-standard`](https://github.com/xiaobright/dsh-anchored-standard)（MIT）——首轮锚定机制（零工具热身轮、窄首请求）基于其 bootstrap filter。
-
-详见 [NOTICE](./NOTICE)。
 
 ## 许可证
 
