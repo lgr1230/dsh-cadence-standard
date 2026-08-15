@@ -74,7 +74,7 @@ npm run check   # 语法检查预设模块后运行测试
 
 ## 优秀测试案例
 
-[`lgr1230/dsh-gargantua`](https://github.com/lgr1230/dsh-gargantua) —— 在本预设 + DeepSeek V4 Pro Max 下构建的实时 Schwarzschild 黑洞光线追踪器，效果优秀的验收案例：**13/13 用例全部 PASS，零控制台错误、零失败请求**，画面经 VLM 评审 8.5/10。详见其[测试报告](https://github.com/lgr1230/dsh-gargantua/blob/main/test/TEST_REPORT.md)。
+[`lgr1230/dsh-gargantua`](https://github.com/lgr1230/dsh-gargantua) —— 在本预设 + DeepSeek V4 Pro Max 下构建的实时 Schwarzschild 黑洞光线追踪器，效果优秀的验收案例：**13/13 用例全部 PASS，零控制台错误、零失败请求**，画面经 VLM 评审 8.5/10。详见其[测试报告（中文）](https://github.com/lgr1230/dsh-gargantua/blob/main/test/TEST_REPORT.zh-CN.md)（[English](https://github.com/lgr1230/dsh-gargantua/blob/main/test/TEST_REPORT.md)）。
 
 ## 引用说明
 

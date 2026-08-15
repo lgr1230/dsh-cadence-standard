@@ -94,7 +94,8 @@ real-time Schwarzschild black hole raytracer built under this preset with
 DeepSeek V4 Pro Max. It is an outstanding acceptance case: **13/13 test
 cases PASS with zero console errors and zero failed requests**, frames
 VLM-reviewed at 8.5/10. See its
-[test report](https://github.com/lgr1230/dsh-gargantua/blob/main/test/TEST_REPORT.md).
+[test report](https://github.com/lgr1230/dsh-gargantua/blob/main/test/TEST_REPORT.md)
+([中文版](https://github.com/lgr1230/dsh-gargantua/blob/main/test/TEST_REPORT.zh-CN.md)).
 
 ## Attribution
 
