@@ -1,4 +1,4 @@
-// Functional test suite for cadence-standard v2.1: a minimal fake Cordis ctx
+// Functional test suite for cadence-standard v2.3.1: a minimal fake Cordis ctx
 // exercises every listener the bootstrap registers, plus pure-function tests
 // for the core detection logic.
 //

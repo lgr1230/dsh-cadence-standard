@@ -5,6 +5,11 @@
   "description": "Thinking-budget pacing preset for DeepSeek Harness (Cadence Standard v2.3.1)",
   "type": "module",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/lgr1230/dsh-cadence-standard.git"
+  },
+  "homepage": "https://github.com/lgr1230/dsh-cadence-standard#readme",
   "engines": {
     "node": ">=22.19.0"
   },

@@ -1,8 +1,11 @@
-# The `cadence-standard` experimental preset (v2): thinking-budget pacing.
+# The `cadence-standard` experimental preset (v2.3.1): thinking-budget pacing.
 #
 # v2 mechanisms (see cadence-core.mjs / cadence-bootstrap.mjs for the
 # implementation and the security invariants):
 #
+#   - ANCHORED FIRST TURN: a zero-tool, low-budget warm-up turn (0 tools,
+#     small budget) before the real task, eliminating the turn-1
+#     thinking-stall (`anchorFirstTurn: true`).
 #   - BUDGET AWARENESS: a constant neutral budget section plus band messages
 #     (small 2048 / medium 4096 / large roomy) injected when the band changes,
 #     so the model knows its cap BEFORE thinking; truncation of a step that
@@ -11,7 +14,7 @@
 #   - MONOTONIC CLASSIFICATION: simple by default, first user message sets the
 #     class, complex messages upgrade permanently. Batch-aware at pre-step.
 #   - PLATFORM HINTS: PowerShell guidance on win32 + shell-syntax-error
-#     detection.
+#     detection (`platform: auto | win32 | posix`).
 #   - PLAN-FORWARD UTILIZATION: slow progress steers the model to move planned,
 #     independent verification work earlier — never new actions.
 #   - VERIFIED DEADLOCK LADDER: suspicion (L1) → fingerprint-verified (L2) →
@@ -19,7 +22,19 @@
 #     optional escalation (L4, `escalateAfterIgnore: true`, plan-mode-safe,
 #     cancel WITHOUT directive — the user decides afterwards).
 #   - DELEGATION ADVISOR: complex code-fixing sessions get one suggestion to
-#     delegate an independent review to a subagent.
+#     delegate an independent review to a subagent (read-only discipline;
+#     targeted numeric-review variant).
+#   - SUBAGENT TIMEOUT REMINDER: settled-aware reminder when a delegated
+#     subagent runs too long (`subagentTimeoutMin: 15`).
+#   - TODO-SYNC ADVISOR: keeps the UI todo list honest when long parallel work
+#     stalls the model's own todo_write cadence (`todoSyncAdvisor: true`).
+#   - VISUAL-DEPTH DEEPENING: gentle steering toward screenshot + read_image
+#     verification when vision-relevant work is detected; fires only AFTER the
+#     model already used vision on its own (`visualDepthAdvisor: true`).
+#   - TRAJECTORY DIAGNOSTICS: trace_status / trace_style for cadence state and
+#     trajectory-style indicators; trace_tune adjusts the output budget only.
+#   - PROMOTION: full Standard tools after the first durable promotion signal
+#     (`promoteOn: either` — first tool call or first assistant message).
 #
 # All injections are static texts, idempotent (durable markers), and routed
 # through the agent/pre-step waterfall (strip first, inject second). The
