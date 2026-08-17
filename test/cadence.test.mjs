@@ -1,12 +1,14 @@
-// Functional test suite for cadence-standard v2.3.1: a minimal fake Cordis ctx
-// exercises every listener the bootstrap registers, plus pure-function tests
-// for the core detection logic.
+// Functional test suite for cadence-standard v4.4 (LEAN): a minimal fake
+// Cordis ctx exercises every listener the bootstrap registers, plus
+// pure-function tests for the core detection logic.
 //
-// v2.1 additions: the agent/pre-step waterfall payload carries NO agent field
-// in real agent-loop (only { messages, turn, step, signal }), so the listener
-// must resolve the agent via ctx.get('agent') (initiator) with an
-// assemble-cached fallback. All pre-step calls below therefore pass an EMPTY
-// payload and rely on the harness's initiator mechanism — mirroring reality.
+// v4.4 (124 assertions): covers the full V4.4 mechanism set — anchor turn
+// + F1 pre-classification, narrow first-task surface + promotion, resident
+// catalog (17 tools incl. vision + todo_write), compaction epoch, bootstrap
+// strip + instruction hint, metacognition checkpoints (reflection + final
+// check with the F4 boundary fix), safety trio (deadlock ladder L1–L4,
+// process-self guard, subagent timeout), convergence steer, verification
+// texts, reloader + trace_status + tool_search.
 import { apply } from '../preset/cadence-bootstrap.mjs'
 import * as core from '../preset/cadence-core.mjs'
 
@@ -25,14 +27,14 @@ function makeHarness(cfg) {
     tools: { register(t) { registered.push(t) } },
   }
   apply(ctx, cfg ?? {})
-  const agentOf = (session) => {
+  const agentOf = (session, opts) => {
     const agent = {
       session,
       inbox: { append() {} },
-      options: { provider: 'deepseek-official', model: 'deepseek-v4-flash' },
+      options: { provider: 'deepseek-official', model: 'deepseek-v4-flash', ...(opts ?? {}) },
       cancel(cause, opts) { cancelCalls.push({ cause, opts }) },
     }
-    initiator = agent // ctx.get('agent') resolves the last-created agent
+    initiator = agent
     return agent
   }
   const h = (ev) => listeners[ev].map((l) => l.fn)
@@ -40,540 +42,588 @@ function makeHarness(cfg) {
 }
 
 const userMsg = (id, text) => ({ id, role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text }] })
+const complexText = '请重构这个模块的架构，考虑并发与性能，多文件迁移'
+const simpleText = '写个 hello 脚本'
 
-// ── 1. assemble: sections + bootstrap tool surface ──────────────────────────
+// ── 1. classification ───────────────────────────────────────────────────────
 {
+  check('classify: complex long task', core.isComplexTask(complexText) === true, 'complex')
+  check('classify: simple short task', core.isComplexTask(simpleText) === false, 'simple')
+  check('classify: 打不开/异常 → complex', core.isComplexTask('WebGL异常，打不开网页') === true, 'cn error')
+  check('classify: crash/blank → complex', core.isComplexTask('the page shows a blank screen and crashes') === true, 'en error')
+  check('sessionClass: empty → simple', core.sessionClass([]) === 'simple', 'empty')
+  check('sessionClass: complex msg upgrades', core.sessionClass([
+    { type: 'user/message', seq: 1, data: userMsg('u1', simpleText) },
+    { type: 'user/message', seq: 2, data: userMsg('u2', complexText) },
+  ]) === 'complex', 'monotonic upgrade')
+  check('effectiveClass: batch complex wins over simple events', core.effectiveClass(
+    [userMsg('b1', complexText)],
+    [{ type: 'user/message', seq: 1, data: userMsg('u1', simpleText) }],
+  ) === 'complex', 'batch wins')
+}
+
+// ── 2. personas: lean, no anchors, no discipline sentences ──────────────────
+{
+  const sp = core.personaFor(false)
+  const cp = core.personaFor(true)
+  check('persona: simple is minimal', sp.includes('Match your effort'), 'simple')
+  check('persona: complex has decision-ending', cp.includes('end each reasoning block with a decision'), 'complex')
+  check('persona: no flash anchors', !cp.includes('review what you have already done'), 'no anchors')
+  check('persona: no file-discipline sentence', !cp.includes('read it first'), 'no discipline')
+  check('persona: no env enumeration', !cp.includes('py -0p'), 'no env words')
+}
+
+// ── 3. guides: full every message, relaxed wording ──────────────────────────
+{
+  check('guide: simple text', core.GUIDE_SIMPLE.includes('直接任务'), 'simple guide')
+  check('guide: complex carries input-driven comparison', core.GUIDE_COMPLEX.includes('输入驱动') && core.GUIDE_COMPLEX.includes('闭路自造'), 'method text')
+  check('guide: complex carries relaxed env-stuck', core.GUIDE_COMPLEX.includes('命令失败≠能力缺失'), 'env-stuck text')
+  check('guide: relaxed — no tool-name enumeration', !core.GUIDE_COMPLEX.includes('py -0p') && !core.GUIDE_COMPLEX.includes('uv-conda'), 'relaxed')
+  check('guide: lite removed', core.GUIDE_COMPLEX_LITE === undefined, 'no lite')
   const hh = makeHarness()
-  const session = { id: 's1', events: [] }
-  const agent = hh.agentOf(session)
-  const a1 = await hh.h('system-prompt/assemble')[0](null, { agent }, async () => ({
-    sections: [{ name: 'persona', text: 'x' }, { name: 'plan-mode', text: 'You are in plan mode.' }],
-    tools: [{ name: 'read' }, { name: 'write' }, { name: 'edit' }, { name: 'pwsh' }, { name: 'grep' }, { name: 'glob' }],
-    contexts: [],
-  }))
-  const names = a1.sections.map((s) => s.name)
-  check('assemble: persona replaced, sections added',
-    names.includes('cadence-persona') && names.includes('cadence-budget') && names.includes('cadence-platform'),
-    names.join(','))
-  check('assemble: PowerShell platform hint (win32)',
-    a1.sections.find((s) => s.name === 'cadence-platform').text.includes('PowerShell'),
-    'hint text present')
-  check('assemble: bootstrap tools (simple default)', a1.tools.map((t) => t.name).join(',') === 'read,write,edit,pwsh',
-    `got ${a1.tools.map((t) => t.name).join(',')}`)
-  check('assemble: no delegation section for simple', !names.includes('cadence-delegation'), 'absent')
-}
-
-// ── 2. pre-step step 1 (EMPTY payload — real agent-loop shape): complex batch ──
-{
-  const hh = makeHarness()
-  const session = { id: 's2', events: [] }
-  const agent = hh.agentOf(session)
-  const batch = [userMsg('u1', '请重构这个模块的架构，考虑并发与性能，多文件迁移')]
-  const d1 = await hh.h('agent/pre-step')[0]({}, async () => ({ kind: 'enter', messages: batch }))
-  const texts = d1.messages.map((m) => m.content[0].text)
-  check('pre-step (no agent in payload): complex guide injected via initiator',
-    texts.some((t) => t.includes('复杂任务')), texts.join(' | ').slice(0, 60))
-  check('pre-step: band large injected', texts.some((t) => t.includes('预算档 large')), 'band present')
-  check('pre-step: strip keeps user message', d1.messages.some((m) => m.id === 'u1'), 'kept')
-  for (const m of batch) session.events.push({ type: 'user/message', seq: session.events.length + 1, data: m })
-  const r = await hh.h('agent/request')[0]({ agent }, async () => ({ provider: 'p', model: 'm', maxTokens: 256000 }))
-  check('request: complex bootstrap cap 16384', r.maxTokens === 16384, `got ${r.maxTokens}`)
-}
-
-// ── 3. simple batch → guide + band small(2048); request cap 2048 ────────────
-{
-  const hh = makeHarness()
-  const session = { id: 's3', events: [] }
-  const agent = hh.agentOf(session)
-  const batch = [userMsg('u2', '写一个 hello world 脚本')]
-  const d1 = await hh.h('agent/pre-step')[0]({}, async () => ({ kind: 'enter', messages: batch }))
-  const texts = d1.messages.map((m) => m.content[0].text)
-  check('pre-step: simple guide + band small(2048)',
-    texts.some((t) => t.includes('直接任务')) && texts.some((t) => t.includes('预算档 small') && t.includes('2048')),
-    texts.join(' | ').slice(0, 70))
-  for (const m of batch) session.events.push({ type: 'user/message', seq: session.events.length + 1, data: m })
-  const r = await hh.h('agent/request')[0]({ agent }, async () => ({ provider: 'p', model: 'm', maxTokens: 256000 }))
-  check('request: simple bootstrap cap 2048', r.maxTokens === 2048, `got ${r.maxTokens}`)
-}
-
-// ── 4. promotion: simple → band medium(4096), request 4096; complex strips ──
-{
-  const hh = makeHarness()
-  const session = { id: 's4', events: [{ type: 'tool/call', seq: 1, data: { name: 'read', arguments: '{}' } }] }
-  const agent = hh.agentOf(session)
-  const d1 = await hh.h('agent/pre-step')[0]({}, async () => ({ kind: 'enter', messages: [] }))
-  const texts = d1.messages.map((m) => m.content[0].text)
-  check('promoted simple: band medium(4096)', texts.some((t) => t.includes('预算档 medium') && t.includes('4096')),
-    texts.join(' | ').slice(0, 70))
-  const r = await hh.h('agent/request')[0]({ agent }, async () => ({ provider: 'p', model: 'm', maxTokens: 2048 }))
-  check('promoted simple: request cap 4096', r.maxTokens === 4096, `got ${r.maxTokens}`)
-  const c4 = { id: 's4c', events: [
-    { type: 'user/message', seq: 1, data: userMsg('u3', '重构这个系统的架构') },
-    { type: 'tool/call', seq: 2, data: { name: 'read', arguments: '{}' } },
-  ] }
-  const a4 = hh.agentOf(c4)
-  const dc = await hh.h('agent/pre-step')[0]({}, async () => ({ kind: 'enter', messages: [] }))
-  check('promoted complex: band large without number', dc.messages.some((m) => m.content[0].text.includes('预算档 large')),
-    'band large')
-  const rc = await hh.h('agent/request')[0]({ agent: a4 }, async () => ({ provider: 'p', model: 'm', maxTokens: 16384 }))
-  check('promoted complex: caps stripped (adapter default)', rc.maxTokens === undefined, `got ${String(rc.maxTokens)}`)
-}
-
-// ── 5. monotonic upgrade: simple first, complex later → complex wins ────────
-{
-  const evs = [{ type: 'user/message', seq: 1, data: userMsg('a', '写个脚本') }]
-  check('monotonic: simple stays simple', core.effectiveClass([userMsg('b', '改一下配置')], evs) === 'simple', 'simple')
-  check('monotonic: complex batch upgrades', core.effectiveClass([userMsg('b', '重构架构并迁移多文件')], evs) === 'complex', 'upgraded')
-  check('monotonic: durable complex wins over simple batch', core.effectiveClass([userMsg('b', '改配置')], [
-    ...evs, { type: 'user/message', seq: 2, data: userMsg('c', '系统架构设计') },
-  ]) === 'complex', 'durable wins')
-}
-
-// ── 5b. command-level repetition (same command, different description) ──────
-{
-  const pwsh = (i) => ({ type: 'tool/call', seq: i, data: { name: 'pwsh', arguments: JSON.stringify({ command: 'node scripts/debug.mjs', description: `run ${i}` }) } })
-  const evs = [pwsh(1), pwsh(2), pwsh(3)]
-  check('cmd-repeats: same command x3 detected', core.trailingCommandRepeats(evs) === 3, '3')
-  check('cmd-repeats: args-level repeats stays 1', core.trailingRepeats(evs) === 1, '1')
-  const loop = [pwsh(1), { type: 'tool/call', seq: 2, data: { name: 'write', arguments: '{}' } }, pwsh(3), { type: 'tool/call', seq: 4, data: { name: 'write', arguments: '{}' } }, pwsh(5)]
-  check('cmd-repeats: loop with interleaved writes detected', core.trailingCommandRepeats(loop) === 3, '3')
-  const benign = [pwsh(1), pwsh(2)]
-  check('cmd-repeats: double-check stays below threshold', core.trailingCommandRepeats(benign) === 2, '2')
-  const d = core.detectDeadlock([...loop, { type: 'step/start', seq: 6, data: {} }], { maxRepeats: 4, maxIdenticalFailures: 3, graceStepsAfterSteer: 2, escalateAfterIgnore: false })
-  check('cmd-repeats: x3 enters L1 suspect', d === core.DL_SUSPECT, `level ${d}`)
-}
-
-// ── 6. truncation: recovery injection + promoted bound ──────────────────────
-{
-  const hh = makeHarness()
-  const session = { id: 's6', events: [
-    { type: 'user/message', seq: 1, data: userMsg('u6', '写一个 hello world') },
-    { type: 'assistant/message', seq: 2, data: { message: { content: [{ type: 'reasoning', text: 'x'.repeat(10) }] }, usage: { outputTokens: 2048, reasoningTokens: 2048 } } },
-  ] }
-  const agent = hh.agentOf(session)
-  const d1 = await hh.h('agent/pre-step')[0]({}, async () => ({ kind: 'enter', messages: [] }))
-  check('pre-step: truncation recovery injected', d1.messages.some((m) => m.content[0].text.includes('预算已放宽')),
-    'recovery text')
-  const r = await hh.h('agent/request')[0]({ agent }, async () => ({ provider: 'p', model: 'm', maxTokens: 2048 }))
-  check('request: truncation releases to promoted bound 4096', r.maxTokens === 4096, `got ${r.maxTokens}`)
-  const ok2 = { id: 's6b', events: [{ type: 'assistant/message', seq: 1, data: { message: { content: [{ type: 'text', text: 'done' }] }, usage: { outputTokens: 500 } } }] }
-  hh.agentOf(ok2)
-  const d2 = await hh.h('agent/pre-step')[0]({}, async () => ({ kind: 'enter', messages: [] }))
-  check('no false recovery', !d2.messages.some((m) => m.content[0].text.includes('预算已放宽')), 'clean')
-}
-
-// ── 7. deadlock ladder: L2 → L3 → L3b, idempotent, L4 gated ────────────────
-{
-  const hh = makeHarness()
-  let seq = 0
-  const session = { id: 's7', events: [] }
-  const agent = hh.agentOf(session)
-  const ev = (type, data) => { const e = { type, seq: ++seq, time: Date.now(), data }; session.events.push(e); return e }
-  const stuckRound = () => {
-    ev('step/start', { turn: 1, step: 1 })
-    ev('tool/call', { turn: 1, step: 1, callId: `c${seq}`, name: 'pwsh', arguments: '{"x":1}' })
-    ev('tool/result', { turn: 1, step: 1, callId: `c${seq - 1}`, message: { content: [{ type: 'text', text: 'ERROR boom' }] }, error: { name: 'E', code: 'X' } })
-  }
-  const pre = async () => {
-    const d = await hh.h('agent/pre-step')[0]({}, async () => ({ kind: 'enter', messages: [] }))
-    const added = d.messages.filter((m) => m.source?.kind === 'plugin')
-    for (const m of added) ev('user/message', m)
-    return added.map((m) => m.content[0].text)
-  }
-  for (let i = 0; i < 5; i++) stuckRound()
-  let texts = await pre()
-  check('ladder: L2 verified injected first', texts.some((t) => t.includes('已核验卡死')), texts.join('|').slice(0, 50))
-  for (let i = 0; i < 2; i++) stuckRound()
-  texts = await pre()
-  check('ladder: L3 pause injected after grace', texts.some((t) => t.includes('暂停指令') && t.includes('ask_user_question')),
-    texts.join('|').slice(0, 50))
-  for (let i = 0; i < 2; i++) stuckRound()
-  texts = await pre()
-  check('ladder: L3b reminder injected', texts.some((t) => t.includes('Cadence 提醒')), texts.join('|').slice(0, 50))
-  for (let i = 0; i < 2; i++) stuckRound()
-  texts = await pre()
-  check('ladder: no further injections (idempotent, no escalate)', texts.length === 0, `got ${texts.length}`)
-  check('ladder: cancel NOT called without escalateAfterIgnore', hh.cancelCalls.length === 0, '0 cancels')
-
-  const hh4 = makeHarness({ escalateAfterIgnore: true })
-  let seq4 = 0
-  const s4 = { id: 's7x', events: [] }
-  const a4 = hh4.agentOf(s4)
-  const ev4 = (type, data) => { const e = { type, seq: ++seq4, data }; s4.events.push(e); return e }
-  const round4 = () => {
-    ev4('step/start', {})
-    ev4('tool/call', { name: 'pwsh', arguments: '{"x":1}' })
-    ev4('tool/result', { message: { content: [{ type: 'text', text: 'ERROR boom' }] }, error: { name: 'E', code: 'X' } })
-  }
-  const pre4 = async () => {
-    const d = await hh4.h('agent/pre-step')[0]({}, async () => ({ kind: 'enter', messages: [] }))
-    for (const m of d.messages.filter((m) => m.source?.kind === 'plugin')) ev4('user/message', m)
-    return d.messages.filter((m) => m.source?.kind === 'plugin').map((m) => m.content[0].text)
-  }
-  for (let i = 0; i < 5; i++) round4()
-  await pre4()
-  for (let i = 0; i < 2; i++) round4()
-  await pre4()
-  for (let i = 0; i < 2; i++) round4()
-  await pre4()
-  for (let i = 0; i < 2; i++) round4()
-  await pre4()
-  check('ladder: L4 cancel fires once with keepInbox', hh4.cancelCalls.length === 1 && hh4.cancelCalls[0].opts?.keepInbox === true,
-    JSON.stringify(hh4.cancelCalls.length))
-  check('ladder: L4 has no directive injection', hh4.cancelCalls.length === 1, 'cancel only')
-
-  const sP = { id: 's7p', events: [] }
-  const aP = hh4.agentOf(sP)
-  await hh4.h('system-prompt/assemble')[0](null, { agent: aP }, async () => ({
-    sections: [{ name: 'plan-mode', text: 'You are in plan mode.' }], tools: [], contexts: [],
-  }))
-  let seqP = 0
-  const evP = (type, data) => { const e = { type, seq: ++seqP, data }; sP.events.push(e); return e }
-  const roundP = () => {
-    evP('step/start', {})
-    evP('tool/call', { name: 'pwsh', arguments: '{"x":1}' })
-    evP('tool/result', { message: { content: [{ type: 'text', text: 'ERROR boom' }] }, error: { name: 'E', code: 'X' } })
-  }
-  const preP = async () => {
-    const d = await hh4.h('agent/pre-step')[0]({}, async () => ({ kind: 'enter', messages: [] }))
-    for (const m of d.messages.filter((m) => m.source?.kind === 'plugin')) evP('user/message', m)
-  }
-  const before = hh4.cancelCalls.length
-  for (let i = 0; i < 5; i++) roundP()
-  await preP(); for (let i = 0; i < 2; i++) roundP(); await preP()
-  for (let i = 0; i < 2; i++) roundP(); await preP()
-  for (let i = 0; i < 2; i++) roundP(); await preP()
-  check('ladder: plan mode blocks L4 cancel', hh4.cancelCalls.length === before, 'no new cancels')
-}
-
-// ── 8. utilization: plan-forward vs read-only ───────────────────────────────
-{
-  const hh = makeHarness()
-  const mk = (id, todos) => {
-    const s = { id, events: [
-      { type: 'tool/call', seq: 1, data: { name: 'job_output', arguments: '{}' } },
-      { type: 'tool/result', seq: 2, data: { message: { content: [{ type: 'text', text: 'running' }] } } },
-      { type: 'tool/call', seq: 3, data: { name: 'job_output', arguments: '{}' } },
-      { type: 'tool/result', seq: 4, data: { message: { content: [{ type: 'text', text: 'running' }] } } },
-    ] }
-    if (todos !== null) s.events.push({ type: 'todo/write', seq: 5, data: { todos } })
-    return s
-  }
-  const sPlan = mk('s8a', [{ content: '写单元测试', status: 'pending' }])
-  hh.agentOf(sPlan)
-  const d1 = await hh.h('agent/pre-step')[0]({}, async () => ({ kind: 'enter', messages: [] }))
-  check('utilization: plan-forward with todo', d1.messages.some((m) => m.content[0].text.includes('前移')),
-    'plan-forward text')
-  for (const m of d1.messages.filter((m) => m.source?.kind === 'plugin')) {
-    sPlan.events.push({ type: 'user/message', seq: sPlan.events.length + 1, data: m })
-  }
-  const sNo = mk('s8b', null)
-  hh.agentOf(sNo)
-  const d2 = await hh.h('agent/pre-step')[0]({}, async () => ({ kind: 'enter', messages: [] }))
-  check('utilization: read-only without todo', d2.messages.some((m) => m.content[0].text.includes('只读')),
-    'read-only text')
-  // restore the sPlan initiator, then confirm idempotency against sPlan
-  hh.agentOf(sPlan)
-  const d3 = await hh.h('agent/pre-step')[0]({}, async () => ({ kind: 'enter', messages: [] }))
-  check('utilization: idempotent', d3.messages.length === 0, `got ${d3.messages.length}`)
-}
-
-// ── 9. shell syntax errors ──────────────────────────────────────────────────
-{
-  const hh = makeHarness()
-  const s = { id: 's9', events: [
-    { type: 'tool/call', seq: 1, data: { name: 'pwsh', arguments: '{"command":"ls"}' } },
-    { type: 'tool/result', seq: 2, data: { message: { content: [{ type: 'text', text: 'ls : 无法将“ls”项识别为 cmdlet、函数、脚本文件或可运行程序的名称' }] }, error: { name: 'E', code: 'X' } } },
-    { type: 'tool/call', seq: 3, data: { name: 'pwsh', arguments: '{"command":"ls"}' } },
-    { type: 'tool/result', seq: 4, data: { message: { content: [{ type: 'text', text: 'ls : 无法将“ls”项识别为 cmdlet' }] }, error: { name: 'E', code: 'X' } } },
-  ] }
+  const s = { id: 's3', events: [{ type: 'user/message', seq: 1, data: userMsg('u1', complexText) }] }
   hh.agentOf(s)
-  const d = await hh.h('agent/pre-step')[0]({}, async () => ({ kind: 'enter', messages: [] }))
-  check('shell: syntax-error steer injected (PowerShell text)', d.messages.some((m) => m.content[0].text.includes('shell 检查') && m.content[0].text.includes('PowerShell')),
-    'shell steer')
+  const d1 = await hh.h('agent/pre-step')[0]({}, async () => ({ kind: 'enter', messages: [userMsg('u2', complexText)] }))
+  const fulls = d1.messages.filter((m) => m.content?.[0]?.text?.includes('这是一个复杂任务')).length
+  check('guide: every complex message gets the FULL guide', fulls === 1, `full guides=${fulls}`)
 }
 
-// ── 10. delegation advisor ──────────────────────────────────────────────────
+// ── 4. anchor + warm-up + narrow first-task surface + promotion ─────────────
 {
   const hh = makeHarness()
-  const calls = []
-  for (let i = 0; i < 5; i++) {
-    calls.push({ type: 'tool/call', seq: 10 + i, data: { name: i < 3 ? 'edit' : 'read', arguments: i < 3 ? JSON.stringify({ file_path: 'C:/x/src/shaders.js' }) : '{}' } })
-  }
-  const s = { id: 's10', events: [
-    ...Array.from({ length: 8 }, (_, i) => ({ type: 'step/start', seq: i + 1, data: {} })),
-    { type: 'user/message', seq: 9, data: userMsg('u10', '重构这个模块的架构并修复多个 bug') },
-    ...calls,
-  ] }
-  hh.agentOf(s)
-  const d = await hh.h('agent/pre-step')[0]({}, async () => ({ kind: 'enter', messages: [] }))
-  check('delegation: advisor fires for complex edit-heavy session', d.messages.some((m) => m.content[0].text.includes('委派建议')),
-    'delegation text')
-  for (const m of d.messages.filter((m) => m.source?.kind === 'plugin')) {
-    s.events.push({ type: 'user/message', seq: s.events.length + 1, data: m })
-  }
-  const d2 = await hh.h('agent/pre-step')[0]({}, async () => ({ kind: 'enter', messages: [] }))
-  check('delegation: idempotent', d2.messages.length === 0, `got ${d2.messages.length}`)
-}
-
-// ── 11. strip phase: bootstrap strips only suppressed sources ───────────────
-{
-  const hh = makeHarness()
-  const s = { id: 's11', events: [] }
-  const instructions = { id: 'i1', role: 'user', source: { kind: 'agent-instructions' }, content: [{ type: 'text', text: 'AGENTS.md digest' }] }
-  const batch = [userMsg('u11', '写个脚本'), instructions]
-  hh.agentOf(s)
-  const d = await hh.h('agent/pre-step')[0]({}, async () => ({ kind: 'enter', messages: batch }))
-  check('strip: agent-instructions removed', !d.messages.some((m) => m.id === 'i1'), 'stripped')
-  check('strip: user message kept + guides appended', d.messages.some((m) => m.id === 'u11') && d.messages.length > batch.length - 1,
-    `kept, ${d.messages.length} messages`)
-}
-
-// ── 12. trace tools ─────────────────────────────────────────────────────────
-{
-  const hh = makeHarness()
-  const s = { id: 's12', events: [{ type: 'user/message', seq: 1, data: userMsg('u12', '写个脚本') }, { type: 'tool/call', seq: 2, data: { name: 'read', arguments: '{}' } }] }
-  const agent = hh.agentOf(s)
-  const names = hh.registered.map((t) => t.name)
-  check('tools: trace_status + trace_tune registered', names.includes('trace_status') && names.includes('trace_tune'),
-    names.join(','))
-  const status = hh.registered.find((t) => t.name === 'trace_status')
-  const out = await status.execute()
-  check('trace_status: reports band/budget/counters',
-    /band=/.test(out) && /truncations=0/.test(out) && /budget=4096/.test(out), out.replace(/\n/g, ' | '))
-  const tune = hh.registered.find((t) => t.name === 'trace_tune')
-  const tOut = await tune.execute({ cap: '8192' })
-  check('trace_tune: explicit cap applies', tOut.includes('8192'), tOut)
-  const r = await hh.h('agent/request')[0]({ agent }, async () => ({ provider: 'p', model: 'm', maxTokens: 4096 }))
-  check('trace_tune: explicit cap reaches request listener', r.maxTokens === 8192, `got ${r.maxTokens}`)
-}
-
-// ── 13. V2.2: anchor first turn ─────────────────────────────────────────────
-{
-  const hh = makeHarness()
-  const s = { id: 's13', events: [], header: { delegationDepth: 0 } }
+  const s = { id: 's4', events: [], header: { delegationDepth: 0 } }
   const agent = hh.agentOf(s)
   agent.inbox.prepend = (_t, m) => hh.prepended.push(m)
   hh.prepended = []
   const inserted = hh.h('agent/inbox/inserted')[0]
-  inserted({ agent, message: userMsg('r1', '请创建一个 3D 场景') })
+  inserted({ agent, message: userMsg('r1', complexText) })
   check('anchor: prepend fired once for first real message', hh.prepended.length === 1
-    && hh.prepended[0].source?.kind === 'plugin' && hh.prepended[0].source?.form === 'notice',
-    `${hh.prepended.length} prepended`)
+    && hh.prepended[0].source?.kind === 'plugin', `${hh.prepended.length} prepended`)
   inserted({ agent, message: userMsg('r2', '第二条消息') })
-  check('anchor: no duplicate on second user insert', hh.prepended.length === 1, `${hh.prepended.length}`)
-  inserted({ agent, message: { id: 'p1', role: 'user', source: { kind: 'plugin', plugin: 'x' }, content: [{ type: 'text', text: 'x' }] } })
-  check('anchor: plugin messages never trigger', hh.prepended.length === 1, `${hh.prepended.length}`)
-  // subagent sessions are never anchored
-  const sub = { id: 's13b', events: [], header: { delegationDepth: 1 } }
-  const subAgent = hh.agentOf(sub)
-  subAgent.inbox.prepend = (_t, m) => hh.prepended.push(m)
-  inserted({ agent: subAgent, message: userMsg('r3', '审查代码') })
-  check('anchor: subagent sessions skipped', hh.prepended.length === 1, `${hh.prepended.length}`)
-  // resumed sessions (existing user/message) never anchored
-  const res = { id: 's13c', events: [{ type: 'user/message', seq: 1, data: userMsg('old', '历史消息') }], header: { delegationDepth: 0 } }
-  const resAgent = hh.agentOf(res)
-  resAgent.inbox.prepend = (_t, m) => hh.prepended.push(m)
-  inserted({ agent: resAgent, message: userMsg('r4', '继续') })
-  check('anchor: resumed sessions skipped', hh.prepended.length === 1, `${hh.prepended.length}`)
-  // anchor phase: assemble exposes ZERO tools until promotion
+  check('anchor: no duplicate on second insert', hh.prepended.length === 1, `${hh.prepended.length}`)
+  inserted({ agent, message: { source: { kind: 'plugin' } } })
+  check('anchor: plugin messages never trigger', hh.prepended.length === 1, 'plugin ignored')
+
+  // Warm-up assembly: 0 tools.
   const a1 = await hh.h('system-prompt/assemble')[0](null, { agent }, async () => ({
-    sections: [], tools: [{ name: 'read' }, { name: 'write' }, { name: 'edit' }, { name: 'pwsh' }, { name: 'grep' }], contexts: [],
+    sections: [{ name: 'persona', text: 'x' }], tools: [{ name: 'read' }, { name: 'edit' }, { name: 'pwsh' }], contexts: [],
   }))
-  check('anchor: warm-up request carries zero tools', a1.tools.length === 0, `tools=${a1.tools.length}`)
-  // after promotion (anchor reply), the full catalog returns
-  s.events.push({ type: 'assistant/message', seq: 1, data: { message: { content: [{ type: 'text', text: '就绪' }] } } })
+  check('warm-up: zero tools', a1.tools.length === 0, `tools=${a1.tools.length}`)
+  check('warm-up: simple persona', a1.sections.find((x) => x.name === 'cadence-persona').text.includes('Match your effort'), 'simple persona')
+
+  // Warm-up request: anchor cap 2048.
+  const r1 = await hh.h('agent/request')[0]({ agent }, async () => ({ provider: 'p', model: 'm', maxTokens: 256000 }))
+  check('warm-up: request capped at 2048', r1.maxTokens === 2048, `got ${r1.maxTokens}`)
+
+  // First TASK request (user message now committed): narrow complex core + complex persona.
+  s.events.push({ type: 'user/message', seq: 10, data: userMsg('t1', complexText) })
   const a2 = await hh.h('system-prompt/assemble')[0](null, { agent }, async () => ({
-    sections: [], tools: [{ name: 'read' }, { name: 'write' }, { name: 'edit' }, { name: 'pwsh' }, { name: 'grep' }], contexts: [],
+    sections: [{ name: 'persona', text: 'x' }], tools: [
+      { name: 'read' }, { name: 'edit' }, { name: 'glob' }, { name: 'grep' }, { name: 'pwsh' },
+      { name: 'write' }, { name: 'vision' }, { name: 'web_search' }, { name: 'subagent' },
+    ], contexts: [],
   }))
-  check('anchor: promoted request restores tools', a2.tools.length === 5, `tools=${a2.tools.length}`)
-}
+  const taskTools = a2.tools.map((t) => t.name).sort()
+  check('task request: narrow core surface', JSON.stringify(taskTools) === JSON.stringify(['edit', 'glob', 'grep', 'pwsh', 'read'].sort()), `got ${taskTools.join(',')}`)
+  check('task request: complex persona (lag fixed)', a2.sections.find((x) => x.name === 'cadence-persona').text.includes('end each reasoning block with a decision'), 'complex persona')
+  const r2 = await hh.h('agent/request')[0]({ agent }, async () => ({ provider: 'p', model: 'm', maxTokens: 256000 }))
+  check('task request: no cap', r2.maxTokens === 256000, `got ${r2.maxTokens}`)
 
-// ── 14. V2.2: platform profiles ─────────────────────────────────────────────
-{
-  const win = core.platformProfileFor('win32')
-  const posix = core.platformProfileFor('posix')
-  check('profile: win32 fields', win.shell === 'pwsh' && win.pathSep === '\\' && win.envStyle === '$env:NAME' && !win.caseSensitive,
-    JSON.stringify([win.shell, win.pathSep]))
-  check('profile: posix fields', posix.shell === 'bash' && posix.pathSep === '/' && posix.caseSensitive, posix.shell)
-  const ws = core.platformSectionFor(win)
-  const ps = core.platformSectionFor(posix)
-  check('platform section: win32 full text', ws.text.includes('PowerShell') && ws.text.includes('chcp') && ws.text.includes('反斜杠') && ws.text.includes('Get-Process'),
-    'win32 text')
-  check('platform section: posix text', ps.text.includes('bash') && ps.text.includes('chmod'), 'posix text')
-  const winErrs = [
-    { type: 'tool/result', seq: 1, data: { message: { content: [{ type: 'text', text: 'ls : 无法将“ls”项识别为 cmdlet、函数、脚本文件或可运行程序的名称' }] }, error: { name: 'E', code: 'X' } } },
-    { type: 'tool/result', seq: 2, data: { message: { content: [{ type: 'text', text: 'ls : 无法将“ls”项识别为 cmdlet' }] }, error: { name: 'E', code: 'X' } } },
-    { type: 'tool/call', seq: 3, data: { name: 'pwsh', arguments: '{}' } },
-  ]
-  const posixErrs = [
-    { type: 'tool/result', seq: 1, data: { message: { content: [{ type: 'text', text: 'bash: ls: command not found' }] }, error: { name: 'E', code: 'X' } } },
-    { type: 'tool/result', seq: 2, data: { message: { content: [{ type: 'text', text: 'ls: command not found' }] }, error: { name: 'E', code: 'X' } } },
-    { type: 'tool/call', seq: 3, data: { name: 'bash', arguments: '{}' } },
-  ]
-  check('shell detect: win32 hits PowerShell errors', core.shellErrorDetect(winErrs, win) === true, 'win32 hit')
-  check('shell detect: win32 misses POSIX errors', core.shellErrorDetect(posixErrs, win) === false, 'win32 miss')
-  check('shell detect: posix hits command-not-found', core.shellErrorDetect(posixErrs, posix) === true, 'posix hit')
-  check('shell detect: posix misses PowerShell errors', core.shellErrorDetect(winErrs, posix) === false, 'posix miss')
-  check('shell steer: win32 includes encoding hint', core.shellSteerFor(win).includes('chcp'), 'win32 steer')
-  check('shell steer: posix short', core.shellSteerFor(posix).includes('bash'), 'posix steer')
-  check('platform override: config wins', core.platformFor({ platform: 'posix' }) === 'posix', 'posix override')
-}
-
-// ── 15. V2.2: subagent timeout (C2) + read-only delegation (C1) ─────────────
-{
-  const now = 1000000
-  const t0 = now - 20 * 60000 // started 20 min ago
-  const running = [
-    { type: 'tool/call', seq: 1, time: t0, data: { name: 'subagent', arguments: '{}' } },
-    { type: 'tool/result', seq: 2, time: t0 + 1000, data: { message: { source: { kind: 'tool' } } } },
-  ]
-  check('subagent timeout: overdue without settled', core.subagentOverdue(running, now, 15 * 60000) === true, 'overdue')
-  const settled = [...running, {
-    type: 'user/message', seq: 3, time: t0 + 2000,
-    data: { source: { kind: 'subagent-settled', form: 'notice' }, content: [{ type: 'text', text: 'done' }] },
-  }]
-  check('subagent timeout: settled is not overdue', core.subagentOverdue(settled, now, 15 * 60000) === false, 'settled')
-  const fresh = [
-    { type: 'tool/call', seq: 1, time: now - 5 * 60000, data: { name: 'subagent', arguments: '{}' } },
-  ]
-  check('subagent timeout: within window not overdue', core.subagentOverdue(fresh, now, 15 * 60000) === false, 'fresh')
-  check('C1: delegation section has read-only discipline', core.DELEGATION_SECTION.text.includes('只读'), 'section')
-  check('C1: delegation guide has read-only discipline', core.GUIDE_DELEGATION.includes('只读'), 'guide')
-  // pre-step integration: overdue subagent injects once, then idempotent
-  const hh = makeHarness()
-  const s = { id: 's15', events: running.map((e, i) => ({ ...e, seq: i + 1 })) }
-  hh.agentOf(s)
-  const d1 = await hh.h('agent/pre-step')[0]({}, async () => ({ kind: 'enter', messages: [] }))
-  check('subagent timeout: steer injected', d1.messages.some((m) => m.content[0].text.includes('子代理超时')),
-    'steer')
-  for (const m of d1.messages.filter((m) => m.source?.kind === 'plugin')) s.events.push({ type: 'user/message', seq: s.events.length + 1, data: m })
-  const d2 = await hh.h('agent/pre-step')[0]({}, async () => ({ kind: 'enter', messages: [] }))
-  check('subagent timeout: idempotent', !d2.messages.some((m) => m.content[0].text.includes('子代理超时')),
-    'no repeat')
-}
-
-// ── 16. V2.2: C3 initiator cross-talk guard ─────────────────────────────────
-{
-  const hh = makeHarness()
-  const sA = { id: 'sA', events: [] }
-  const sB = { id: 'sB', events: [] }
-  const aA = hh.agentOf(sA)
-  const aB = hh.agentOf(sB)
-  // assemble for both sessions; the LAST assemble must win the recent map
-  await hh.h('system-prompt/assemble')[0](null, { agent: aA }, async () => ({ sections: [], tools: [], contexts: [] }))
-  await hh.h('system-prompt/assemble')[0](null, { agent: aB }, async () => ({ sections: [], tools: [], contexts: [] }))
-  // ctx.get('agent') returns the last-created agent (aB); its session has a
-  // recent entry, so the pre-step must resolve to aB — not aA.
-  const d = await hh.h('agent/pre-step')[0]({}, async () => ({ kind: 'enter', messages: [userMsg('uA', '写个脚本')] }))
-  const guide = d.messages.filter((m) => m.source?.kind === 'plugin' && m.content[0].text.includes('Cadence：'))
-  check('C3: initiator resolves to its own recent agent', guide.length >= 1, `guide=${guide.length}`)
-}
-
-// ── 17. V2.3: todo sync ─────────────────────────────────────────────────────
-{
-  const mkCalls = (n, edits) => Array.from({ length: n }, (_, i) => ({
-    type: 'tool/call', seq: 100 + i, data: { name: i < edits ? 'edit' : 'pwsh', arguments: '{}' },
+  // First tool call → promoted → RESIDENT surface (web_search not resident → filtered; vision IS resident).
+  s.events.push({ type: 'tool/call', seq: 20, data: { name: 'read', arguments: '{}' } })
+  const a3 = await hh.h('system-prompt/assemble')[0](null, { agent }, async () => ({
+    sections: [{ name: 'persona', text: 'x' }], tools: [{ name: 'read' }, { name: 'write' }, { name: 'vision' }, { name: 'pwsh' }, { name: 'web_search' }], contexts: [],
   }))
-  const todoEv = (seq, statuses) => ({ type: 'todo/write', seq, data: { todos: statuses.map((s, i) => ({ content: `任务${i}`, status: s })) } })
-  const cfg = { todoSyncAfterSteps: 12 }
-  check('todo sync: no todo → 0', core.todoStale([], cfg) === 0, '0')
-  check('todo sync: too few calls → 0', core.todoStale([todoEv(1, ['pending'])], cfg) === 0, '0')
-  check('todo sync: stale mid-run → 1',
-    core.todoStale([todoEv(1, ['pending', 'pending']), ...mkCalls(15, 4)], cfg) === 1, '1')
-  check('todo sync: completed but new edits → 2',
-    core.todoStale([todoEv(1, ['completed', 'completed']), ...mkCalls(12, 6)], cfg) === 2, '2')
-  check('todo sync: completed without new edits → 0',
-    core.todoStale([todoEv(1, ['completed', 'completed']), ...mkCalls(12, 1)], cfg) === 0, '0')
-  // integration: inject once, then idempotent
-  const hh = makeHarness()
-  const s = { id: 's17', events: [todoEv(1, ['pending', 'pending']), ...mkCalls(15, 4)] }
-  hh.agentOf(s)
-  const d1 = await hh.h('agent/pre-step')[0]({}, async () => ({ kind: 'enter', messages: [] }))
-  check('todo sync: steer injected (stale)', d1.messages.some((m) => m.content[0].text.includes('todo 同步') && m.content[0].text.includes('待办快照仍停留在')),
-    'stale steer')
-  for (const m of d1.messages.filter((m) => m.source?.kind === 'plugin')) s.events.push({ type: 'user/message', seq: s.events.length + 1, data: m })
-  const d2 = await hh.h('agent/pre-step')[0]({}, async () => ({ kind: 'enter', messages: [] }))
-  check('todo sync: idempotent', !d2.messages.some((m) => m.content[0].text.includes('todo 同步')), 'no repeat')
+  check('promoted: resident surface (vision resident, web_search filtered)',
+    JSON.stringify(a3.tools.map((t) => t.name).sort()) === JSON.stringify(['pwsh', 'read', 'vision', 'write'].sort()),
+    `tools=${a3.tools.map((t) => t.name).join(',')}`)
 }
 
-// ── 18. V2.3: remaining optimizations ───────────────────────────────────────
+// ── 5. promotion: tool-call only (warm-up reply does NOT promote) ───────────
 {
-  // C2 fix: settled arrives as user/message with source.kind === 'subagent-settled'
-  const now = 1_000_000
-  const t0 = now - 20 * 60000
-  const started = [{ type: 'tool/call', seq: 1, time: t0, data: { name: 'subagent', arguments: '{}' } }]
-  const settledNotice = [...started, {
-    type: 'user/message', seq: 2, time: t0 + 1000,
-    data: { source: { kind: 'subagent-settled', form: 'notice' }, content: [{ type: 'text', text: 'finished' }] },
-  }]
-  check('C2 fix: settled notice (user/message) clears overdue', core.subagentOverdue(settledNotice, now, 15 * 60000) === false, 'settled')
-  check('C2 fix: no notice still overdue', core.subagentOverdue(started, now, 15 * 60000) === true, 'overdue')
-
-  // classifier: error-report keywords
-  check('classifier: 打不开/异常 → complex', core.isComplexTask('WebGL异常，打不开网页') === true, 'cn error words')
-  check('classifier: crash/blank → complex', core.isComplexTask('the page shows a blank screen and crashes') === true, 'en error words')
-
-  // delegation: high-risk module targeting (V2.3.1: enhancement, not gate)
-  const mkEdit = (seq, fp) => ({ type: 'tool/call', seq, data: { name: 'edit', arguments: JSON.stringify({ file_path: fp }) } })
-  const base = [
-    ...Array.from({ length: 8 }, (_, i) => ({ type: 'step/start', seq: i + 1, data: {} })),
-    mkEdit(10, 'C:/x/src/shaders.js'),
-    mkEdit(11, 'C:/x/src/shaders.js'),
-    mkEdit(12, 'C:/x/src/engine.js'),
-  ]
-  check('delegation: shader edits warrant review (generic)', core.delegationWarranted(base) === true, 'warranted')
-  check('delegation: riskyModuleHit selects targeted variant', core.riskyModuleHit(base) === true, 'risky hit')
-  const plain = [
-    ...Array.from({ length: 8 }, (_, i) => ({ type: 'step/start', seq: i + 1, data: {} })),
-    mkEdit(10, 'C:/x/src/app.js'),
-    mkEdit(11, 'C:/x/src/app.js'),
-    mkEdit(12, 'C:/x/src/util.js'),
-  ]
-  check('delegation: plain edits still warrant generic review (de-specialized)', core.delegationWarranted(plain) === true, 'warranted')
-  check('delegation: plain edits no risky hit', core.riskyModuleHit(plain) === false, 'no risky')
-  // integration: plain session gets generic text, risky session gets targeted text
-  const hhD = makeHarness()
-  const sD = { id: 'sD1', events: [
-    ...Array.from({ length: 8 }, (_, i) => ({ type: 'step/start', seq: i + 1, data: {} })),
-    { type: 'user/message', seq: 9, data: userMsg('uD', '重构这个模块的架构并修复多个 bug') },
-    mkEdit(10, 'C:/x/src/app.js'), mkEdit(11, 'C:/x/src/app.js'), mkEdit(12, 'C:/x/src/util.js'),
-  ] }
-  hhD.agentOf(sD)
-  const dD1 = await hhD.h('agent/pre-step')[0]({}, async () => ({ kind: 'enter', messages: [] }))
-  const dlg = dD1.messages.find((m) => m.content[0].text.includes('委派建议'))
-  check('delegation: plain session gets generic text', dlg !== undefined && !dlg.content[0].text.includes('数值计算'), 'generic')
-  const sR = { id: 'sD2', events: [
-    ...Array.from({ length: 8 }, (_, i) => ({ type: 'step/start', seq: i + 1, data: {} })),
-    { type: 'user/message', seq: 9, data: userMsg('uR', '重构这个模块的架构并修复多个 bug') },
-    mkEdit(10, 'C:/x/src/shaders.js'), mkEdit(11, 'C:/x/src/math.js'), mkEdit(12, 'C:/x/src/engine.js'),
-  ] }
-  hhD.agentOf(sR)
-  const dR1 = await hhD.h('agent/pre-step')[0]({}, async () => ({ kind: 'enter', messages: [] }))
-  const dlgR = dR1.messages.find((m) => m.content[0].text.includes('委派建议'))
-  check('delegation: risky session gets targeted text', dlgR !== undefined && dlgR.content[0].text.includes('数值计算'), 'targeted')
-
-  // visual depth: fires only after vision was used; idempotent
   const hh = makeHarness()
-  const s = { id: 's18', events: [{ type: 'tool/call', seq: 1, data: { name: 'vision', arguments: '{}' } }] }
+  const s = { id: 's5', events: [{ type: 'assistant/message', seq: 1, data: { message: { content: [] } } }] }
+  hh.agentOf(s)
+  const a1 = await hh.h('system-prompt/assemble')[0](null, { agent: hh.agentOf(s) }, async () => ({
+    sections: [{ name: 'persona', text: 'x' }],
+    tools: [{ name: 'read' }, { name: 'write' }, { name: 'edit' }, { name: 'pwsh' }, { name: 'vision' }, { name: 'web_search' }],
+    contexts: [],
+  }))
+  check('promotion: assistant message alone does NOT promote', a1.tools.length === 4,
+    `tools=${a1.tools.length} (narrow read/write/edit+pwsh)`)
+  s.events.push({ type: 'tool/call', seq: 2, data: { name: 'read', arguments: '{}' } })
+  const a2 = await hh.h('system-prompt/assemble')[0](null, { agent: hh.agentOf(s) }, async () => ({
+    sections: [{ name: 'persona', text: 'x' }],
+    tools: [{ name: 'read' }, { name: 'write' }, { name: 'edit' }, { name: 'pwsh' }, { name: 'vision' }, { name: 'web_search' }],
+    contexts: [],
+  }))
+  check('promotion: tool call promotes to resident set (vision resident)', a2.tools.length === 5
+    && a2.tools.some((t) => t.name === 'vision') && !a2.tools.some((t) => t.name === 'web_search'),
+    `tools=${a2.tools.length} (resident read/write/edit+pwsh+vision; web_search filtered)`)
+}
+
+// ── 6. metacognition checkpoints ────────────────────────────────────────────
+{
+  const mkSteps = (n, startSeq = 1) => Array.from({ length: n }, (_, i) => ({ type: 'step/start', seq: startSeq + i, data: {} }))
+  const userMsgEv = (seq) => ({ type: 'user/message', seq, data: userMsg(`u${seq}`, '任务') })
+  check('reflection: too few steps → false', core.reflectionDue(mkSteps(10), {}) === false, 'early')
+  check('reflection: ≥12 steps no intervention → true', core.reflectionDue([...mkSteps(13), userMsgEv(99)], {}) === true, 'due')
+  check('reflection: user intervention → false', core.reflectionDue([...mkSteps(13), userMsgEv(99), userMsgEv(100)], {}) === false, 'intervened')
+  const writeEv = { type: 'tool/call', seq: 50, data: { name: 'write', arguments: '{}' } }
+  check('final: no write → false', core.finalCheckDue(mkSteps(15), {}) === false, 'no write')
+  check('final: <8 steps after write → false', core.finalCheckDue([...mkSteps(3), writeEv, ...mkSteps(5, 60)], {}) === false, 'early')
+  check('final: ≥8 steps after write → true', core.finalCheckDue([...mkSteps(3), writeEv, ...mkSteps(9, 60), userMsgEv(99)], {}) === true, 'due')
+  check('final: relaxed text carries contrast principle', core.STEER_FINAL_CHECK.includes('对照参考核验') && core.STEER_FINAL_CHECK.includes('仅下载或检索不算'), 'contrast+flow')
+  check('final: relaxed text carries self-score line', core.STEER_FINAL_CHECK.includes('自评或外部评分不等于交付依据'), 'score line')
+  const hh = makeHarness()
+  const s = { id: 's6', events: [
+    ...mkSteps(14),
+    { type: 'user/message', seq: 20, data: userMsg('task', complexText) },
+    writeEv,
+    ...mkSteps(9, 70),
+  ] }
   hh.agentOf(s)
   const d1 = await hh.h('agent/pre-step')[0]({}, async () => ({ kind: 'enter', messages: [] }))
-  check('visual depth: steer injected after vision use', d1.messages.some((m) => m.content[0].text.includes('视觉深化')),
-    'visual steer')
+  check('checkpoints: reflection injected', d1.messages.some((m) => m.content[0].text.includes('Cadence 自省')), 'reflection')
+  check('checkpoints: final check injected', d1.messages.some((m) => m.content[0].text.includes('Cadence 验收')), 'final')
   for (const m of d1.messages.filter((m) => m.source?.kind === 'plugin')) s.events.push({ type: 'user/message', seq: s.events.length + 1, data: m })
   const d2 = await hh.h('agent/pre-step')[0]({}, async () => ({ kind: 'enter', messages: [] }))
-  check('visual depth: idempotent', !d2.messages.some((m) => m.content[0].text.includes('视觉深化')), 'no repeat')
-  const sNoV = { id: 's18b', events: [] }
-  hh.agentOf(sNoV)
+  check('checkpoints: idempotent', !d2.messages.some((m) => m.content[0].text.includes('Cadence 自省') || m.content[0].text.includes('Cadence 验收')), 'no repeat')
+}
+
+// ── 7. deadlock ladder (rebuilt, locked) ────────────────────────────────────
+{
+  const cmd = (seq, name, command) => ({ type: 'tool/call', seq, data: { name, arguments: JSON.stringify({ command }) } })
+  const res = (seq, text) => ({ type: 'tool/result', seq, data: { message: { content: [{ type: 'tool-result', content: [{ type: 'text', text }], isError: true }] } } })
+  check('ladder: identicalCommandCount x3', core.identicalCommandCount([cmd(1, 'pwsh', 'a'), cmd(2, 'pwsh', 'a'), cmd(3, 'pwsh', 'a')]) === 3, '3')
+  check('ladder: distinct args count 1', core.identicalCommandCount([cmd(1, 'pwsh', 'a'), cmd(2, 'pwsh', 'b')]) === 1, 'distinct')
+  check('ladder: interleaved writes still count', core.identicalCommandCount([cmd(1, 'pwsh', 'a'), cmd(2, 'write', 'x'), cmd(3, 'pwsh', 'a'), cmd(4, 'write', 'y'), cmd(5, 'pwsh', 'a')]) === 3, 'loop')
+  check('ladder: double-check below threshold', core.identicalCommandCount([cmd(1, 'pwsh', 'a'), cmd(2, 'pwsh', 'a')]) === 2, '2')
+  check('ladder: identicalFailureCount x3', core.identicalFailureCount([res(1, 'boom'), res(2, 'boom'), res(3, 'boom')]) === 3, 'fails 3')
+  check('ladder: different failures count 1', core.identicalFailureCount([res(1, 'boom'), res(2, 'bang')]) === 1, 'fails distinct')
+
+  const cfg = { maxRepeats: 3, maxIdenticalFailures: 3, graceStepsAfterSteer: 0 }
+  const steers = (s) => s.events.filter((e) => e.type === 'user/message' && e.data?.source?.kind === 'plugin')
+  const pushSteers = (s, msgs) => { for (const m of msgs.filter((m) => m.source?.kind === 'plugin')) s.events.push({ type: 'user/message', seq: s.events.length + 100, data: m }) }
+
+  // L1: 3 repeats → SUSPECT; then L2 → VERIFIED; then L3 → PAUSE; then L3b → REMIND.
+  const hhCfg = { maxRepeats: 3, maxIdenticalFailures: 3, graceStepsAfterSteer: 0 }
+  const s = { id: 's7', events: [cmd(1, 'pwsh', 'a'), cmd(2, 'pwsh', 'a'), cmd(3, 'pwsh', 'a')] }
+  check('ladder: L1 suspect', core.detectDeadlock(s.events, cfg) === core.DL_SUSPECT, 'L1')
+  const hh = makeHarness(hhCfg)
+  hh.agentOf(s)
+  const d1 = await hh.h('agent/pre-step')[0]({}, async () => ({ kind: 'enter', messages: [] }))
+  check('ladder: stall steer injected', d1.messages.some((m) => m.content[0].text.includes('进度停滞')), 'L1 steer')
+  pushSteers(s, d1.messages)
+  check('ladder: L2 verified', core.detectDeadlock(s.events, cfg) === core.DL_VERIFIED, 'L2')
+  const d2 = await hh.h('agent/pre-step')[0]({}, async () => ({ kind: 'enter', messages: [] }))
+  check('ladder: verified steer injected', d2.messages.some((m) => m.content[0].text.includes('已核验卡死')), 'L2 steer')
+  pushSteers(s, d2.messages)
+  check('ladder: L3 pause', core.detectDeadlock(s.events, cfg) === core.DL_PAUSE, 'L3')
   const d3 = await hh.h('agent/pre-step')[0]({}, async () => ({ kind: 'enter', messages: [] }))
-  check('visual depth: never fires without vision use', !d3.messages.some((m) => m.content[0].text.includes('视觉深化')), 'no vision')
+  check('ladder: pause steer injected', d3.messages.some((m) => m.content[0].text.includes('暂停指令')), 'L3 steer')
+  pushSteers(s, d3.messages)
+  check('ladder: L3b reminder', core.detectDeadlock(s.events, cfg) === core.DL_REMIND, 'L3b')
+  const d4 = await hh.h('agent/pre-step')[0]({}, async () => ({ kind: 'enter', messages: [] }))
+  check('ladder: reminder steer injected', d4.messages.some((m) => m.content[0].text.includes('Cadence 提醒')), 'L3b steer')
+  pushSteers(s, d4.messages)
+  check('ladder: no escalation by default', core.detectDeadlock(s.events, cfg) === core.DL_NONE, 'no L4')
 
-  // trace_style indicators
-  const ti = core.trajectoryIndicators([
-    { type: 'assistant/message', seq: 1, data: { message: { content: [{ type: 'reasoning', text: 'we need a plan. let me recall the formula. let me verify by reading.' }] } } },
-  ])
-  check('trace_style: we/letMe counted', ti.wePer10k > 0 && ti.letMePer10k > 0, JSON.stringify(ti.letMeVerifyShare))
-  check('trace_style: verify share high', ti.letMeVerifyShare >= 66, `${ti.letMeVerifyShare}%`)
+  // Progress resets the episode.
+  const sP = { id: 's7p', events: [cmd(1, 'pwsh', 'a'), cmd(2, 'pwsh', 'a'), cmd(3, 'pwsh', 'a'), { type: 'tool/call', seq: 9, data: { name: 'write', arguments: '{}' } }] }
+  check('ladder: progress resets', core.detectDeadlock(sP.events, cfg) === core.DL_NONE, 'progress')
+
+  // L4 escalate (opt-in) + plan-mode block.
+  const hh4 = makeHarness({ escalateAfterIgnore: true, ...hhCfg })
+  const s4 = { id: 's7e', events: [cmd(1, 'pwsh', 'a'), cmd(2, 'pwsh', 'a'), cmd(3, 'pwsh', 'a')] }
+  const a4 = hh4.agentOf(s4)
+  const e1 = await hh4.h('agent/pre-step')[0]({}, async () => ({ kind: 'enter', messages: [] }))
+  pushSteers(s4, e1.messages)
+  const e2 = await hh4.h('agent/pre-step')[0]({}, async () => ({ kind: 'enter', messages: [] }))
+  pushSteers(s4, e2.messages)
+  const e3 = await hh4.h('agent/pre-step')[0]({}, async () => ({ kind: 'enter', messages: [] }))
+  pushSteers(s4, e3.messages)
+  const e4 = await hh4.h('agent/pre-step')[0]({}, async () => ({ kind: 'enter', messages: [] }))
+  pushSteers(s4, e4.messages)
+  check('ladder: L4 detected with escalateAfterIgnore', core.detectDeadlock(s4.events, { ...cfg, escalateAfterIgnore: true }) === core.DL_ESCALATE, 'L4 state')
+  const e5 = await hh4.h('agent/pre-step')[0]({}, async () => ({ kind: 'enter', messages: [] }))
+  check('ladder: L4 cancels once with keepInbox', hh4.cancelCalls.length === 1 && hh4.cancelCalls[0].opts?.keepInbox === true, `${hh4.cancelCalls.length} cancel`)
+  check('ladder: L4 has no directive injection', !e5.messages.some((m) => m.content?.[0]?.text?.includes('Cadence')), 'no directive')
+  s4.events.push({ type: 'user/message', seq: 999, data: { content: [{ type: 'text', text: 'You are in plan mode.' }] } })
+  // plan mode blocks L4: assemble sets st.planMode from sections.
+  await hh4.h('system-prompt/assemble')[0](null, { agent: a4 }, async () => ({
+    sections: [{ name: 'persona', text: 'x' }, { name: 'plan-mode', text: 'You are in plan mode.' }], tools: [], contexts: [],
+  }))
+  const e6 = await hh4.h('agent/pre-step')[0]({}, async () => ({ kind: 'enter', messages: [] }))
+  check('ladder: plan mode blocks L4 cancel', hh4.cancelCalls.length === 1, `cancels=${hh4.cancelCalls.length}`)
+}
+
+// ── 8. process-self guard ───────────────────────────────────────────────────
+{
+  const selfPid = process.pid
+  const parentPid = process.ppid
+  check('guard: kill own pid → true', core.selfKillDetect(`Stop-Process -Id ${selfPid} -Force`) === true, 'own pid')
+  check('guard: taskkill own pid → true', core.selfKillDetect(`taskkill /PID ${selfPid} /F`) === true, 'taskkill')
+  check('guard: bash kill -9 own pid → true', core.selfKillDetect(`kill -9 ${selfPid}`) === true, 'bash kill')
+  check('guard: Get-Process node | Stop-Process → true', core.selfKillDetect('Get-Process node | Stop-Process') === true, 'all node')
+  check('guard: unrelated kill → false', core.selfKillDetect('Stop-Process -Id 99999999') === false, 'other pid')
+  check('guard: ordinary command → false', core.selfKillDetect('Get-Content foo.txt') === false, 'plain')
+  check('guard: user asked restart → true', core.userAskedRestart('请重启 dsh web 服务') === true, 'ask')
+  check('guard: user asked restart (verb-first) → true', core.userAskedRestart('重启 dsh web 服务吧') === true, 'verb-first')
+  check('guard: english ask → true', core.userAskedRestart('please restart the dsh server') === true, 'en')
+  check('guard: mention only → false', core.userAskedRestart('工具层会拦截，不会实际终止任何进程') === false, 'mention')
+  const exec = (name, command, session) => ({
+    name, arguments: command !== undefined ? { command } : {}, agent: { session }, parent: undefined,
+    signal: new AbortController().signal,
+  })
+  const marker = async () => ({ kind: 'allow' })
+  const isPass = (r) => r?.kind === 'allow'
+  const hh = makeHarness()
+  const s = { id: 's8', events: [{ type: 'user/message', seq: 5, data: userMsg('u8', '帮我检查一下环境') }] }
+  hh.agentOf(s)
+  const veto = await hh.h('tools/pre-execute')[0](exec('pwsh', `Stop-Process -Id ${selfPid} -Force`, s), marker)
+  check('guard: self-kill denied via pre-execute', veto?.kind === 'deny' && String(veto.reason ?? '').includes('Cadence 保护'), 'deny')
+  const pass = await hh.h('tools/pre-execute')[0](exec('pwsh', 'Get-Content foo.txt', s), marker)
+  check('guard: ordinary command passes', isPass(pass), 'pass')
+  const hh2 = makeHarness()
+  const s2 = { id: 's8b', events: [{ type: 'user/message', seq: 5, data: userMsg('u8', '帮我检查一下环境') }] }
+  hh2.agentOf(s2)
+  const v1 = await hh2.h('tools/pre-execute')[0](exec('pwsh', `Stop-Process -Id ${selfPid}`, s2), marker)
+  check('guard: first veto records state', v1?.kind === 'deny', 'first veto')
+  s2.events.push({ type: 'user/message', seq: 99, data: userMsg('u8b', '好的，确认重启') })
+  const v2 = await hh2.h('tools/pre-execute')[0](exec('pwsh', `Stop-Process -Id ${selfPid}`, s2), marker)
+  check('guard: after user reply the kill passes', isPass(v2), 'confirmed')
+  const hh3 = makeHarness()
+  const s3 = { id: 's8c', events: [{ type: 'user/message', seq: 5, data: userMsg('u8', '请重启 dsh web 服务') }] }
+  hh3.agentOf(s3)
+  const v3 = await hh3.h('tools/pre-execute')[0](exec('pwsh', `Stop-Process -Id ${selfPid}`, s3), marker)
+  check('guard: user-requested restart allowed', isPass(v3), 'user asked')
+  const hh4 = makeHarness({ processSelfGuard: false })
+  const s4 = { id: 's8d', events: [{ type: 'user/message', seq: 5, data: userMsg('u8', '帮我检查一下环境') }] }
+  hh4.agentOf(s4)
+  const v4 = await hh4.h('tools/pre-execute')[0](exec('pwsh', `Stop-Process -Id ${selfPid}`, s4), marker)
+  check('guard: processSelfGuard:false disables veto', isPass(v4), 'config off')
+}
+
+// ── 9. subagent timeout ─────────────────────────────────────────────────────
+{
+  const now = Date.now()
+  const started = { type: 'tool/call', seq: 1, time: now - 20 * 60000, data: { name: 'subagent', arguments: '{}' } }
+  check('timeout: overdue without settled → true', core.subagentOverdue([started], now, 15 * 60000) === true, 'overdue')
+  check('timeout: settled is not overdue', core.subagentOverdue([
+    started,
+    { type: 'user/message', seq: 2, time: now - 1000, data: { source: { kind: 'subagent-settled' }, content: [] } },
+  ], now, 15 * 60000) === false, 'settled')
+  check('timeout: within window not overdue', core.subagentOverdue([{ ...started, time: now - 1000 }], now, 15 * 60000) === false, 'fresh')
+  const hh = makeHarness()
+  const s = { id: 's9', events: [started] }
+  hh.agentOf(s)
+  const d1 = await hh.h('agent/pre-step')[0]({}, async () => ({ kind: 'enter', messages: [] }))
+  check('timeout: steer injected', d1.messages.some((m) => m.content[0].text.includes('Cadence 子代理超时')), 'steer')
+  for (const m of d1.messages.filter((m) => m.source?.kind === 'plugin')) s.events.push({ type: 'user/message', seq: s.events.length + 1, data: m })
+  const d2 = await hh.h('agent/pre-step')[0]({}, async () => ({ kind: 'enter', messages: [] }))
+  check('timeout: idempotent', !d2.messages.some((m) => m.content[0].text.includes('Cadence 子代理超时')), 'no repeat')
+}
+
+// ── 10. block-length convergence steer ──────────────────────────────────────
+{
+  const mkMsg = (text) => ({ type: 'assistant/message', seq: 1, data: { message: { content: [{ type: 'reasoning', text }] } } })
+  const mkSteps = (n) => Array.from({ length: n }, (_, i) => ({ type: 'step/start', seq: 100 + i, data: {} }))
+  const long = mkMsg('x'.repeat(6000))
+  const short = mkMsg('y'.repeat(200))
+  check('converge: long-median fixture → true', core.blockLengthSteerDue([...mkSteps(12), long, long, short, long, long], {}) === true, 'long')
+  check('converge: short-median fixture → false', core.blockLengthSteerDue([...mkSteps(12), short, short, long, short, short], {}) === false, 'short')
+  check('converge: too few steps → false', core.blockLengthSteerDue([long, long, long, long, long], {}) === false, 'steps')
+  check('converge: user intervened → false', core.blockLengthSteerDue([...mkSteps(12), { type: 'user/message', seq: 1, data: userMsg('u', 'x') }, { type: 'user/message', seq: 2, data: userMsg('u2', 'y') }, long, long, long, long, long], {}) === false, 'intervened')
+  check('converge: threshold override', core.blockLengthSteerDue([...mkSteps(12), mkMsg('z'.repeat(3000)), mkMsg('z'.repeat(3000)), mkMsg('z'.repeat(3000))], { blockP50Threshold: 4000 }) === false, 'threshold')
+  // Calibration equivalents (the local real-session logs are not part of this
+  // repo): a session whose running median crosses 2500 fires; one that stays
+  // below does not.
+  check('converge: long-median session fires (calibration)',
+    core.blockLengthSteerDue([...mkSteps(12), long, long, short, long, long, long, long, long], {}) === true, 'cal long')
+  check('converge: short-median session does not fire (calibration)',
+    core.blockLengthSteerDue([...mkSteps(12), short, short, long, short, short, short, short, short], {}) === false, 'cal short')
+  const hh = makeHarness()
+  const s = { id: 's10', events: [...mkSteps(12), { type: 'user/message', seq: 50, data: userMsg('task', complexText) }, long, long, long, long, long] }
+  hh.agentOf(s)
+  const d1 = await hh.h('agent/pre-step')[0]({}, async () => ({ kind: 'enter', messages: [] }))
+  check('converge: steer injected via pre-step', d1.messages.some((m) => m.content[0].text.includes('Cadence 收敛')), 'steer')
+}
+
+// ── 11. reloader + trace_status (lean) ──────────────────────────────────────
+{
+  const rel = await import('../preset/cadence-reloader.mjs')
+  check('reloader: shape', rel.name === 'cadence-reloader' && rel.inject.includes('loader') && typeof rel.apply === 'function', 'shape')
+  const hh = makeHarness()
+  const s = { id: 's11', events: [{ type: 'user/message', seq: 1, data: userMsg('u11', '写个脚本') }, { type: 'tool/call', seq: 2, data: { name: 'read', arguments: '{}' } }] }
+  hh.agentOf(s)
+  const names = hh.registered.map((t) => t.name)
+  check('tools: trace_status + tool_search registered',
+    JSON.stringify(names.sort()) === JSON.stringify(['tool_search', 'trace_status'].sort()), names.join(','))
+  const status = hh.registered.find((t) => t.name === 'trace_status')
+  const out = await status.execute()
+  check('trace_status: lean fields', /build=v4\.4/.test(out) && /blockP50=0/.test(out) && !/band=|budget=|frequent=|requested=/.test(out), out.replace(/\n/g, ' | '))
+}
+
+// ── 12. V4.1: resident catalog, compaction epoch, strip, hint ───────────────
+{
+  // unlockedTools
+  const resident = new Set(['read'])
+  const unlocked = core.unlockedTools([
+    { type: 'tool/call', seq: 1, data: { name: 'read', arguments: '{}' } },
+    { type: 'tool/call', seq: 2, data: { name: 'vision', arguments: '{}' } },
+  ], resident)
+  check('R1: unlockedTools from durable tool/call events', unlocked.has('vision') && !unlocked.has('read'), [...unlocked].join(','))
+  // postCompaction
+  check('R2: postCompaction true after boundary', core.postCompaction([
+    { type: 'tool/call', seq: 1, data: { name: 'read', arguments: '{}' } },
+    { type: 'compaction/end', seq: 10, data: { compactionId: 'c1', turn: null } },
+  ]) === true, 'controlled')
+  check('R2: new progress re-promotes', core.postCompaction([
+    { type: 'tool/call', seq: 1, data: { name: 'read', arguments: '{}' } },
+    { type: 'compaction/end', seq: 10, data: { compactionId: 'c1', turn: null } },
+    { type: 'assistant/message', seq: 20, data: { message: { content: [] } } },
+  ]) === false, 'repromoted')
+  check('R2: failed compaction ignored', core.postCompaction([
+    { type: 'tool/call', seq: 1, data: { name: 'read', arguments: '{}' } },
+    { type: 'compaction/end', seq: 10, data: { compactionId: 'c1', turn: null, error: 'boom' } },
+  ]) === false, 'failed ignored')
+
+  // R1 assemble integration: promoted → resident + unlocked; safety valves.
+  const hh = makeHarness()
+  const s = { id: 's12', events: [
+    { type: 'user/message', seq: 1, data: userMsg('u', complexText) },
+    { type: 'tool/call', seq: 2, data: { name: 'read', arguments: '{}' } },
+    { type: 'tool/call', seq: 3, data: { name: 'vision', arguments: '{}' } },
+  ] }
+  const agent = hh.agentOf(s)
+  const a1 = await hh.h('system-prompt/assemble')[0](null, { agent }, async () => ({
+    sections: [{ name: 'persona', text: 'x' }],
+    tools: [
+      { name: 'read' }, { name: 'write' }, { name: 'edit' }, { name: 'glob' }, { name: 'grep' }, { name: 'pwsh' },
+      { name: 'vision' }, { name: 'web_search' }, { name: 'subagent' }, { name: 'ask_user_question' },
+      { name: 'dev_inject_plugin' }, { name: 'workflow' }, { name: 'trace_status' }, { name: 'tool_search' },
+    ],
+    contexts: [],
+  }))
+  const names = a1.tools.map((t) => t.name)
+  check('R1: resident + unlocked (vision) visible', names.includes('read') && names.includes('ask_user_question')
+    && names.includes('vision') && names.includes('tool_search'), names.join(','))
+  check('R1: heavy tools filtered until unlocked', !names.includes('web_search') && !names.includes('dev_inject_plugin')
+    && !names.includes('workflow'), names.join(','))
+
+  // R1: subagents keep the full catalog.
+  const sub = { id: 's12s', header: { delegationDepth: 1 }, events: [] }
+  const agentS = hh.agentOf(sub)
+  const aS = await hh.h('system-prompt/assemble')[0](null, { agent: agentS }, async () => ({
+    sections: [{ name: 'persona', text: 'x' }], tools: [{ name: 'read' }, { name: 'dev_inject_plugin' }, { name: 'workflow' }], contexts: [],
+  }))
+  check('R1: subagent keeps full catalog', aS.tools.length === 3, `tools=${aS.tools.length}`)
+
+  // R2 assemble: post-compaction → resident only (no unlocked).
+  const sC = { id: 's12c', events: [
+    { type: 'user/message', seq: 1, data: userMsg('u', complexText) },
+    { type: 'tool/call', seq: 2, data: { name: 'read', arguments: '{}' } },
+    { type: 'tool/call', seq: 3, data: { name: 'vision', arguments: '{}' } },
+    { type: 'compaction/end', seq: 10, data: { compactionId: 'c', turn: null } },
+  ] }
+  const agentC = hh.agentOf(sC)
+  const aC = await hh.h('system-prompt/assemble')[0](null, { agent: agentC }, async () => ({
+    sections: [{ name: 'persona', text: 'x' }],
+    tools: [{ name: 'read' }, { name: 'vision' }, { name: 'web_search' }, { name: 'ask_user_question' }, { name: 'tool_search' }],
+    contexts: [],
+  }))
+  const cNames = aC.tools.map((t) => t.name)
+  check('R2: post-compaction → resident only (vision stays resident, unlocked filtered)',
+    cNames.includes('read') && cNames.includes('ask_user_question')
+    && cNames.includes('vision') && !cNames.includes('web_search'), cNames.join(','))
+
+  // R3: bootstrap-phase strip + instruction hint.
+  const hh3 = makeHarness()
+  const s3 = { id: 's12d', events: [{ type: 'user/message', seq: 1, data: userMsg('u', complexText) }] }
+  hh3.agentOf(s3)
+  const d1 = await hh3.h('agent/pre-step')[0]({}, async () => ({ kind: 'enter', messages: [
+    userMsg('m1', '任务'),
+    { id: 'instr', role: 'user', source: { kind: 'agent-instructions' }, content: [{ type: 'text', text: 'AGENTS digest' }] },
+    { id: 'skill', role: 'user', source: { kind: 'skill-catalog' }, content: [{ type: 'text', text: 'skills' }] },
+  ] }))
+  const kinds = d1.messages.map((m) => m.source?.kind)
+  check('R3: bootstrap strips injected context', !kinds.includes('agent-instructions') && !kinds.includes('skill-catalog')
+    && kinds.includes('user'), kinds.join(','))
+  // R3: AFTER promotion the strip is OFF (injected context passes through).
+  const hh3b = makeHarness()
+  const s3b = { id: 's12db', events: [
+    { type: 'user/message', seq: 1, data: userMsg('u', complexText) },
+    { type: 'tool/call', seq: 2, data: { name: 'read', arguments: '{}' } },
+  ] }
+  hh3b.agentOf(s3b)
+  const d1b = await hh3b.h('agent/pre-step')[0]({}, async () => ({ kind: 'enter', messages: [
+    userMsg('m1', '任务'),
+    { id: 'instr', role: 'user', source: { kind: 'agent-instructions' }, content: [{ type: 'text', text: 'AGENTS digest' }] },
+  ] }))
+  const kindsB = d1b.messages.map((m) => m.source?.kind)
+  check('R3: promoted phase does NOT strip injected context', kindsB.includes('agent-instructions'), kindsB.join(','))
+  const hh4 = makeHarness()
+  const s4 = { id: 's12e', events: [
+    { type: 'user/message', seq: 1, data: userMsg('u', complexText) },
+    { type: 'tool/call', seq: 2, data: { name: 'read', arguments: '{}' } },
+  ] }
+  hh4.agentOf(s4)
+  const d2 = await hh4.h('agent/pre-step')[0]({}, async () => ({ kind: 'enter', messages: [] }))
+  check('R3: instruction hint injected once after promotion',
+    d2.messages.some((m) => m.content?.[0]?.text?.includes('Cadence 指令提示')), 'hint')
+  for (const m of d2.messages.filter((m) => m.source?.kind === 'plugin')) s4.events.push({ type: 'user/message', seq: s4.events.length + 100, data: m })
+  const d3 = await hh4.h('agent/pre-step')[0]({}, async () => ({ kind: 'enter', messages: [] }))
+  check('R3: hint idempotent', !d3.messages.some((m) => m.content?.[0]?.text?.includes('Cadence 指令提示')), 'no repeat')
+}
+
+// ── 13. V4.2: F1 pre-classify, F2 request_tool, F3 frequent tier ────────────
+{
+  const fs = await import('node:fs')
+  const assemble = async (hh, agent, tools) => hh.h('system-prompt/assemble')[0](null, { agent }, async () => ({
+    sections: [{ name: 'persona', text: 'x' }], tools, contexts: [],
+  }))
+  const names = (a) => a.tools.map((t) => t.name)
+
+  // F1: inserted pre-classification — first request WITHOUT any user/message
+  // event yet must carry the complex persona + complex core.
+  {
+    const hh = makeHarness()
+    const s = { id: 's13f1', events: [] }
+    const agent = hh.agentOf(s)
+    hh.h('agent/inbox/inserted')[0]({ agent, message: userMsg('task', complexText) })
+    const a1 = await assemble(hh, agent, [
+      { name: 'read' }, { name: 'edit' }, { name: 'glob' }, { name: 'grep' }, { name: 'pwsh' }, { name: 'write' }, { name: 'vision' },
+    ])
+    check('F1: complex core on the very first request (no event yet)',
+      JSON.stringify(names(a1).sort()) === JSON.stringify(['edit', 'glob', 'grep', 'pwsh', 'read']), names(a1).join(','))
+    check('F1: complex persona on the very first request',
+      a1.sections.find((x) => x.name === 'cadence-persona').text.includes('end each reasoning block with a decision'), 'complex persona')
+  }
+  // F1: warm-up stays 0 tools + SIMPLE persona even after complex pre-classify.
+  {
+    const hh = makeHarness()
+    const s = { id: 's13w', events: [] }
+    const agent = hh.agentOf(s)
+    agent.inbox.prepend = (_t, m) => hh.prepended.push(m)
+    hh.prepended = []
+    hh.h('agent/inbox/inserted')[0]({ agent, message: userMsg('r1', complexText) })
+    const w1 = await assemble(hh, agent, [{ name: 'read' }, { name: 'write' }, { name: 'edit' }, { name: 'pwsh' }])
+    check('F1: warm-up 0 tools + simple persona',
+      w1.tools.length === 0 && w1.sections.find((x) => x.name === 'cadence-persona').text.includes('Match your effort'),
+      `tools=${w1.tools.length}`)
+  }
+  // F1: simple insert does NOT upgrade; plugin insert never classifies.
+  {
+    const hh = makeHarness()
+    const s = { id: 's13s', events: [] }
+    const agent = hh.agentOf(s)
+    hh.h('agent/inbox/inserted')[0]({ agent, message: userMsg('r1', simpleText) })
+    const a1 = await assemble(hh, agent, [{ name: 'read' }, { name: 'write' }, { name: 'edit' }, { name: 'pwsh' }, { name: 'vision' }])
+    check('F1: simple insert → simple core (4 tools)', names(a1).length === 4 && !names(a1).includes('vision'), names(a1).join(','))
+    const hh2 = makeHarness()
+    const s2 = { id: 's13p', events: [] }
+    const agent2 = hh2.agentOf(s2)
+    hh2.h('agent/inbox/inserted')[0]({ agent: agent2, message: { source: { kind: 'plugin' }, content: [{ type: 'text', text: complexText }] } })
+    const a2 = await assemble(hh2, agent2, [{ name: 'read' }, { name: 'write' }, { name: 'edit' }, { name: 'pwsh' }, { name: 'vision' }])
+    check('F1: plugin insert never classifies', names(a2).length === 4, names(a2).join(','))
+  }
+
+  // F1: the warm-up pre-step (batch contains no user message → effectiveClass
+  // simple) must NOT downgrade the inserted pre-classification.
+  {
+    const hh = makeHarness()
+    const s = { id: 's13m', events: [] }
+    const agent = hh.agentOf(s)
+    agent.inbox.prepend = (_t, m) => hh.prepended.push(m)
+    hh.prepended = []
+    hh.h('agent/inbox/inserted')[0]({ agent, message: userMsg('r1', complexText) })
+    // warm-up assemble consumes anchorZeroTools, then the warm-up pre-step
+    // runs (batch contains only plugin messages → effectiveClass simple).
+    const w1 = await assemble(hh, agent, [{ name: 'read' }, { name: 'write' }, { name: 'edit' }, { name: 'pwsh' }])
+    check('F1: warm-up assemble 0 tools before pre-step', w1.tools.length === 0, 'warm-up')
+    const d1 = await hh.h('agent/pre-step')[0]({}, async () => ({ kind: 'enter', messages: [
+      { id: 'w', role: 'user', source: { kind: 'plugin' }, content: [{ type: 'text', text: 'Cadence 热身' }] },
+    ] }))
+    check('F1: warm-up pre-step does not downgrade complex', d1 !== undefined, 'ran')
+    const a1 = await assemble(hh, agent, [
+      { name: 'read' }, { name: 'edit' }, { name: 'glob' }, { name: 'grep' }, { name: 'pwsh' }, { name: 'write' },
+    ])
+    check('F1: complex survives warm-up pre-step → complex core',
+      JSON.stringify(names(a1).sort()) === JSON.stringify(['edit', 'glob', 'grep', 'pwsh', 'read']), names(a1).join(','))
+  }
+
+  // V4.3: vision is RESIDENT — visible right after promotion without any
+  // request/unlock (the V4.1/V4.2 dead loop is gone).
+  {
+    const hh = makeHarness()
+    const s = { id: 's13vis', events: [
+      { type: 'user/message', seq: 1, data: userMsg('u', complexText) },
+      { type: 'tool/call', seq: 2, data: { name: 'read', arguments: '{}' } },
+    ] }
+    const agent = hh.agentOf(s)
+    const a1 = await assemble(hh, agent, [
+      { name: 'vision' }, { name: 'read' }, { name: 'pwsh' }, { name: 'web_search' }, { name: 'tool_search' }, { name: 'subagent' },
+    ])
+    check('V4.3: vision in promoted surface (resident)', names(a1).includes('vision') && !names(a1).includes('web_search'), names(a1).join(','))
+    check('V4.3: request_tool NOT registered', hh.registered.find((t) => t.name === 'request_tool') === undefined, 'removed')
+    // post-compaction: vision stays (resident).
+    const sC = { id: 's13visc', events: [
+      { type: 'user/message', seq: 1, data: userMsg('u', complexText) },
+      { type: 'tool/call', seq: 2, data: { name: 'read', arguments: '{}' } },
+      { type: 'compaction/end', seq: 10, data: { compactionId: 'c', turn: null } },
+    ] }
+    const agentC = hh.agentOf(sC)
+    const aC = await assemble(hh, agentC, [{ name: 'read' }, { name: 'vision' }, { name: 'web_search' }, { name: 'tool_search' }])
+    check('V4.3: vision stays in post-compaction surface', names(aC).includes('vision') && !names(aC).includes('web_search'), names(aC).join(','))
+  }
+
+  // V4.3 (F4): finalCheckDue counts the in-flight step — a session ending
+  // exactly `finalCheckAfterSteps` steps after its last write still fires.
+  {
+    const mkSteps = (n, startSeq = 1) => Array.from({ length: n }, (_, i) => ({ type: 'step/start', seq: startSeq + i, data: {} }))
+    const writeEv = { type: 'tool/call', seq: 50, data: { name: 'write', arguments: '{}' } }
+    // 7 steps after the write → not yet (7+1=8 < 8? no: 8 >= 8 → due at 7!)
+    check('F4: 6 steps after write → false', core.finalCheckDue([...mkSteps(3), writeEv, ...mkSteps(6, 60)], {}) === false, '6 steps')
+    check('F4: 7 steps after write → true (in-flight step counts)', core.finalCheckDue([...mkSteps(3), writeEv, ...mkSteps(7, 60)], {}) === true, '7 steps')
+  }
+}
+
+// ── 14. V4.3/V4.4: verification texts + resident additions ────────────────
+{
+  check('V4.3: real-form line in reflection', core.STEER_REFLECTION.includes('真实形态'), 'reflection ④ real-form')
+  check('V4.3: real-form lines in final check', core.STEER_FINAL_CHECK.includes('完整形态')
+    && core.STEER_FINAL_CHECK.includes('真实形态') && core.STEER_FINAL_CHECK.includes('字符摘要'), 'final check')
+  check('V4.3: no failure-turn remnants', core.STEER_FAILURE_TURN === undefined
+    && !core.STEER_FINAL_CHECK.includes('连续失败'), 'no F5')
+
+  // V4.4: todo_write is resident (visible after promotion without unlock).
+  const hh = makeHarness()
+  const s = { id: 's14', events: [
+    { type: 'user/message', seq: 1, data: userMsg('u', complexText) },
+    { type: 'tool/call', seq: 2, data: { name: 'read', arguments: '{}' } },
+  ] }
+  const agent = hh.agentOf(s)
+  const a1 = await hh.h('system-prompt/assemble')[0](null, { agent }, async () => ({
+    sections: [{ name: 'persona', text: 'x' }],
+    tools: [{ name: 'read' }, { name: 'write' }, { name: 'edit' }, { name: 'pwsh' }, { name: 'vision' }, { name: 'todo_write' }, { name: 'web_search' }],
+    contexts: [],
+  }))
+  const n = a1.tools.map((t) => t.name)
+  check('V4.4: todo_write in promoted surface (resident)', n.includes('todo_write') && n.includes('vision') && !n.includes('web_search'), n.join(','))
+
+  // V4.1 R1: tool_search execute behavior (catalog from assemble, query filter).
+  const hhT = makeHarness()
+  const sT = { id: 's14t', events: [{ type: 'tool/call', seq: 1, data: { name: 'read', arguments: '{}' } }] }
+  hhT.agentOf(sT)
+  await hhT.h('system-prompt/assemble')[0](null, { agent: hhT.agentOf(sT) }, async () => ({
+    sections: [], tools: [{ name: 'vision', description: 'look at images' }, { name: 'read', description: 'read files' }, { name: 'pwsh', description: 'run shell' }], contexts: [],
+  }))
+  const ts = hhT.registered.find((t) => t.name === 'tool_search')
+  const out1 = await ts.execute({ query: 'image' })
+  check('R1: tool_search finds by description', out1.includes('vision') && !out1.includes('read'), out1.replace(/\n/g, ' | '))
+  const out2 = await ts.execute({ query: 'no-such-tool' })
+  check('R1: tool_search miss returns empty note', out2.includes('no tools match'), out2)
 }
 
 console.log(results.join('\n'))

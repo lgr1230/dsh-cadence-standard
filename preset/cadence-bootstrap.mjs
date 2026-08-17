@@ -1,45 +1,41 @@
 /**
- * cadence-bootstrap v2 — thinking-budget pacing for the DSH execution chain.
+ * cadence-bootstrap v4.4 — LEAN wiring + resident-catalog tool-surface
+ * management (orchestrator-inspired, see ref-orchestrator).
  *
- * v2 changes vs v1 (all derived from the V1 test-session postmortem):
+ * V4.4: todo_write joins RESIDENT (task-list carrier — Mona 12/14 used it,
+ * V4.1–V4.3 had 0 uses with unplanned iteration); verification texts demand
+ * the artifact's REAL form (F7 — Mona V4.3 verified via crops/ASCII for 80+
+ * steps, rendered a PNG only at the end). A windowed block-length trigger
+ * was calibrated and REJECTED (whole-session p50 fires early enough; a
+ * 10-block window mis-triggers the good V4.1 session).
+ * V4.3: frequent tier + request_tool REMOVED (zero calls measured — a tool
+ * not on the surface is never used), vision joins RESIDENT, finalCheckDue
+ * counts the in-flight step (F4).
+ * V4.2 (F1): pre-classify at agent/inbox/inserted — the FIRST task request
+ * carries the complex persona + complex core (was: simple while the guide
+ * said complex); pre-step assignment is monotonic (the warm-up batch has no
+ * user message and must not downgrade F1).
+ * V4.1: R1 resident catalog + unlock-on-use (subagents keep the full
+ * catalog); R2 compaction epoch (surface falls back to resident until new
+ * progress); R3 bootstrap context strip + one-time instruction hint; R4
+ * process-self guard on tools/pre-execute (native deny).
  *
- *   1. ALL injections moved from the `session/event` emit path (which never
- *      fired in V1 — scope/agent lookup failure) into the `agent/pre-step`
- *      waterfall, which is proven to work. One listener, two explicit phases:
- *      strip first, inject second (no listener-order dependencies).
- *   2. Budget awareness: the model sees a constant neutral budget section
- *      plus a band message ("small/medium/large" with the real cap) injected
- *      when the band changes, BEFORE it starts thinking. Truncation of the
- *      previous step (reasoning consumed the whole cap) releases the next
- *      request's cap and injects a recovery message.
- *   3. Classification is monotonic and batch-aware: the entering batch's
- *      real user message classifies the step (fixes V1's assemble-time
- *      misclassification); later complex messages upgrade permanently.
- *   4. Platform-aware shell hints + shell-syntax-error detection (PowerShell
- *      on win32).
- *   5. Plan-forward utilization: slow progress steers the model to move
- *      planned independent verification earlier — never new actions.
- *   6. Verified deadlock ladder: suspicion (L1) → fingerprint-verified (L2)
- *      → pause-and-ask-user (L3) → bounded reminder (L3b) → optional
- *      escalation (L4, default off, plan-mode-safe). L4 uses
- *      `agent.cancel({keepInbox:true})` WITHOUT injecting a directive — the
- *      user decides afterwards; the turn ends `aborted` and stays auditable.
- *
- * Security invariants (P1–P8): all injection texts are static constants from
- * cadence-core (zero interpolation); no fs/shell/permission tools are
- * registered (`trace_status` is read-only, `trace_tune` only changes the
- * budget); the strip list never touches user or policy messages; every
- * injection is idempotent via durable markers; failures degrade to "keep
- * everything" / "no injection".
+ * Security invariants (P1–P8): all injection texts are static constants
+ * (zero interpolation); no fs/shell/permission tools registered
+ * (trace_status/tool_search are read-only); injections idempotent via
+ * durable markers; failures degrade to "keep everything" / "no injection".
+ * The resident filter is CONDITIONING, not a security boundary — the
+ * sandbox/approval stack is the enforcement layer (hiding ≠ denying).
  */
 
 import {
-  ANCHOR_TEXT, BUDGET_SECTION, DELEGATION_SECTION, DL_ESCALATE,
-  applyPersona, budgetBandFor, coreFor, countMarkers, countTruncated,
-  detectDeadlock, detectTruncation, effectiveClass,
-  isFreshTopLevel, parseCap, pendingInjections, personaFor,
-  platformFor, platformProfileFor, platformSectionFor, sessionClass,
-  trajectoryIndicators,
+  ANCHOR_TEXT, DL_ESCALATE,
+  applyPersona, blockMedian, coreFor, countMarkers,
+  detectDeadlock, effectiveClass,
+  extractText, isComplexTask, isFreshTopLevel, pendingInjections, personaFor,
+  postCompaction, selfKillDetect,
+  selfKillVetoMessage, sessionClass,
+  unlockedTools, userAskedRestart,
 } from './cadence-core.mjs'
 
 /** Cordis plugin name used by loader diagnostics. */
@@ -48,103 +44,96 @@ export const name = 'cadence-bootstrap'
 /** Prompt assembly and the tools registry must exist. */
 export const inject = ['systemPrompt', 'tools']
 
-const PROMOTE_EITHER = ['tool/call', 'assistant/message']
-const DEFAULT_SUPPRESSED_SOURCES = ['agent-instructions', 'skill-catalog']
-
-/** Minimal spec → JSON Schema compiler (subset of defineTool's work). */
-function toJsonSchema(spec) {
-  const properties = {}
-  const required = []
-  for (const [key, meta] of Object.entries(spec || {})) {
-    const prop = { type: meta.type }
-    if (Array.isArray(meta.enum)) prop.enum = meta.enum
-    if (meta.description) prop.description = meta.description
-    properties[key] = prop
-    if (meta.required) required.push(key)
-  }
-  return { type: 'object', properties, required, additionalProperties: false }
-}
-
-function positiveInt(value, field, fallback) {
-  if (value === undefined) return fallback
-  if (!Number.isSafeInteger(value) || value <= 0) {
-    throw new TypeError(`${name}: ${field} must be a positive safe integer`)
-  }
-  return value
-}
-
-function sourceList(value, field, fallback) {
-  if (value === undefined) return new Set(fallback)
-  if (!Array.isArray(value) || value.some((item) => typeof item !== 'string' || item.length === 0)) {
-    throw new TypeError(`${name}: ${field} must be an array of non-empty strings`)
-  }
-  return new Set(value)
-}
-
 function parsePromoteOn(value) {
-  if (value === undefined || value === 'either') return PROMOTE_EITHER
-  if (value === 'tool-call') return ['tool/call']
+  if (value === undefined || value === 'tool-call') return ['tool/call']
+  if (value === 'either') return ['tool/call', 'assistant/message']
   if (value === 'assistant-message') return ['assistant/message']
   throw new TypeError(`${name}: promoteOn must be one of "tool-call", "assistant-message", "either"; got ${JSON.stringify(value)}`)
-}
-
-/** Strip `maxTokens` from a resolved request when it equals one of our caps. */
-function stripCaps(resolved, caps) {
-  if (!caps.includes(resolved.maxTokens)) return resolved
-  const { maxTokens: _dropped, ...rest } = resolved
-  return rest
 }
 
 function seqToken() {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 }
 
+/** V4.4 default resident set: core work tools + vision (a general capability
+ *  tool — V4.1/V4.2 Mona sessions repeatedly wanted it but never had it on
+ *  the surface; the unlock-on-first-use loop made it unreachable in fresh
+ *  sessions) + todo_write (explicit task-list carrier — Mona 12/14 used it
+ *  during planned work; V4.1–V4.3 sessions had 0 uses with unplanned
+ *  wandering iteration) + SAFETY VALVES (never filtered out — the L3
+ *  pause-and-ask, the subagent-timeout instructions and delegation must stay
+ *  reachable in every phase) + preset tools. */
+const DEFAULT_RESIDENT = [
+  'read', 'write', 'edit', 'glob', 'grep',
+  'pwsh', 'bash',
+  'vision', 'todo_write',
+  'subagent', 'subagent_fork', 'ask_user_question',
+  'list_agents', 'interrupt_agent', 'send_message',
+  'trace_status', 'cadence_reload', 'tool_search',
+]
+
 export function apply(ctx, config) {
-  const simpleBootstrap = positiveInt(config.simpleBootstrapMaxTokens, 'simpleBootstrapMaxTokens', 2048)
-  const simpleCap = positiveInt(config.simpleCapMaxTokens, 'simpleCapMaxTokens', 4096)
-  const complexBootstrap = positiveInt(config.complexBootstrapMaxTokens, 'complexBootstrapMaxTokens', 16384)
-  const promoteEvents = parsePromoteOn(config.promoteOn)
-  const suppressedSources = sourceList(config.suppressedContextSources, 'suppressedContextSources', DEFAULT_SUPPRESSED_SOURCES)
   const cfg = {
-    simpleBootstrap,
-    simpleCap,
-    complexBootstrap,
-    platformHints: config.platformHints !== false,
-    delegationAdvisor: config.delegationAdvisor !== false,
-    utilizationAdvisor: config.utilizationAdvisor !== false,
-    deadlockDetector: config.deadlockDetector !== false,
-    escalateAfterIgnore: config.escalateAfterIgnore === true,
-    maxRepeats: positiveInt(config.maxRepeats, 'maxRepeats', 4),
-    maxIdenticalFailures: positiveInt(config.maxIdenticalFailures, 'maxIdenticalFailures', 3),
-    graceStepsAfterSteer: positiveInt(config.graceStepsAfterSteer, 'graceStepsAfterSteer', 2),
     anchorFirstTurn: config.anchorFirstTurn !== false,
     anchorText: typeof config.anchorText === 'string' && config.anchorText.length > 0
       ? config.anchorText
       : ANCHOR_TEXT,
-    subagentTimeoutMin: positiveInt(config.subagentTimeoutMin, 'subagentTimeoutMin', 15),
-    todoSyncAdvisor: config.todoSyncAdvisor !== false,
-    todoSyncAfterSteps: positiveInt(config.todoSyncAfterSteps, 'todoSyncAfterSteps', 12),
-    visualDepthAdvisor: config.visualDepthAdvisor !== false,
+    anchorCapMaxTokens: Number.isSafeInteger(config.anchorCapMaxTokens) && config.anchorCapMaxTokens > 0
+      ? config.anchorCapMaxTokens : 2048,
+    promoteEvents: parsePromoteOn(config.promoteOn),
+    reflectionAdvisor: config.reflectionAdvisor !== false,
+    reflectionAfterSteps: Number.isSafeInteger(config.reflectionAfterSteps) && config.reflectionAfterSteps > 0
+      ? config.reflectionAfterSteps : 12,
+    finalCheckAdvisor: config.finalCheckAdvisor !== false,
+    finalCheckAfterSteps: Number.isSafeInteger(config.finalCheckAfterSteps) && config.finalCheckAfterSteps > 0
+      ? config.finalCheckAfterSteps : 8,
+    deadlockDetector: config.deadlockDetector !== false,
+    escalateAfterIgnore: config.escalateAfterIgnore === true,
+    maxRepeats: Number.isSafeInteger(config.maxRepeats) && config.maxRepeats > 0 ? config.maxRepeats : 4,
+    maxIdenticalFailures: Number.isSafeInteger(config.maxIdenticalFailures) && config.maxIdenticalFailures > 0
+      ? config.maxIdenticalFailures : 3,
+    graceStepsAfterSteer: Number.isSafeInteger(config.graceStepsAfterSteer) && config.graceStepsAfterSteer >= 0
+      ? config.graceStepsAfterSteer : 2,
+    processSelfGuard: config.processSelfGuard !== false,
+    subagentTimeoutMin: Number.isSafeInteger(config.subagentTimeoutMin) && config.subagentTimeoutMin > 0
+      ? config.subagentTimeoutMin : 15,
+    blockLengthSteer: config.blockLengthSteer !== false,
+    blockP50Threshold: typeof config.blockP50Threshold === 'number' && config.blockP50Threshold > 0
+      ? config.blockP50Threshold : 2500,
+    blockLengthAfterSteps: Number.isSafeInteger(config.blockLengthAfterSteps) && config.blockLengthAfterSteps > 0
+      ? config.blockLengthAfterSteps : 10,
+    // V4.1 R1 — resident catalog (conditioning, NOT a security boundary).
+    residentTools: Array.isArray(config.residentTools) && config.residentTools.length > 0
+      ? [...new Set(config.residentTools)]
+      : DEFAULT_RESIDENT,
+    // V4.1 R3 — bootstrap-phase context strip + instruction hint.
+    suppressedSources: Array.isArray(config.suppressedContextSources)
+      ? new Set(config.suppressedContextSources.filter((s) => typeof s === 'string' && s.length > 0))
+      : new Set(['agent-instructions', 'skill-catalog']),
+    instructionHint: config.instructionHint !== false,
   }
-  /** Active platform profile (V2.2 platform adaptation; config override wins). */
-  const profile = platformProfileFor(platformFor(config))
-  const injectedCaps = [simpleBootstrap, simpleCap, complexBootstrap]
+  const residentSet = new Set(cfg.residentTools)
 
   /** Sessions already promoted in this process; promotion is append-only. */
   const promoted = new Set()
-  /** Session id -> explicit budget from `trace_tune` ('full' or a token count). */
-  const explicitCaps = new Map()
   /** Session id -> live Agent handle (in-process only, for trace tools). */
   const agents = new Map()
   /** Session id -> most recently assembled Agent (C3: initiator cross-talk guard). */
   const recentAgents = new Map()
-  /** Session id -> live state (plan-mode flag, memoized class, anchor flag). */
+  /** Session id -> full assembled tool catalog (name + description), for tool_search. */
+  const catalogs = new Map()
+  /** Session id -> live state (plan-mode flag, memoized class, anchor flags). */
   const states = new Map()
+  /** Session id -> event seq at which the process-self guard first vetoed a
+   *  self-kill command. The veto stays armed until a REAL user message lands
+   *  after that seq (the user confirmed) — or the user's own message already
+   *  asked for the restart/kill. */
+  const killVetoed = new Map()
 
   const isPromoted = (session) => {
     if (session === undefined) return true
     if (promoted.has(session.id)) return true
-    const hit = session.events.some((event) => promoteEvents.includes(event.type))
+    const hit = session.events.some((event) => cfg.promoteEvents.includes(event.type))
     if (hit) promoted.add(session.id)
     return hit
   }
@@ -152,17 +141,30 @@ export function apply(ctx, config) {
   const stateOf = (session) => {
     let st = states.get(session.id)
     if (st === undefined) {
-      st = { complex: false, planMode: false, anchorInjected: false }
+      st = { complex: false, planMode: false, anchorInjected: false, anchorZeroTools: false, anchorCap: false, preClass: false }
       states.set(session.id, st)
     }
     return st
   }
 
-  // ── anchor first turn: seed one low-load warm-up turn before the real task ──
-  // (V2.2: kills the turn-1 "all thinking, no output, max-tokens stall").
-  // The `agent/inbox/inserted` event payload carries the agent — the one
-  // injection path verified to work (zero-anchored-standard's anchor-turn).
+  // ── anchor first turn + F1 pre-classification (one listener) ──────────────
+  // F1: the inbox insert lands BEFORE the task request is assembled, so the
+  // FIRST task request carries the complex persona + complex core (was:
+  // simple persona + simple core while the guide said complex). Monotonic —
+  // once complex, never downgraded; plugin/runtime messages never classify.
+  // The warm-up assemble forces the SIMPLE persona (0 tools + "act directly"
+  // is the warm-up contract). Anchor flags are INDEPENDENTLY consumed
+  // (anchorZeroTools by assemble, anchorCap by request) — do NOT infer the
+  // warm-up from events (the user/message event lands AFTER task assembly).
   ctx.on('agent/inbox/inserted', ({ agent, message }) => {
+    if (agent !== undefined && agent.session !== undefined
+      && message?.source?.kind === 'user') {
+      const text = extractText(message)
+      if (text.trim() && isComplexTask(text)) {
+        stateOf(agent.session).complex = true
+        stateOf(agent.session).preClass = true
+      }
+    }
     if (!cfg.anchorFirstTurn) return
     if (agent === undefined || agent.session === undefined) return
     if (message?.source?.kind === 'plugin') return // never re-anchor on our own or other plugin messages
@@ -177,13 +179,15 @@ export function apply(ctx, config) {
         content: [{ type: 'text', text: cfg.anchorText }],
         source: { kind: 'plugin', plugin: 'cadence-bootstrap', form: 'notice', summary: 'cadence anchor turn' },
       })
+      st.anchorZeroTools = true
+      st.anchorCap = true
     } catch {
       // Races: skip; the real message proceeds unanchored rather than blocked.
       st.anchorInjected = false
     }
   })
 
-  // ── prompt assembly: persona + constant sections + first-request surface ──
+  // ── prompt assembly: persona + tool-surface phases ─────────────────────────
   ctx.on('system-prompt/assemble', async (_assembly, context, next) => {
     const assembled = await next()
     const agent = context.agent
@@ -191,76 +195,76 @@ export function apply(ctx, config) {
     const session = agent.session
     agents.set(session.id, agent)
     recentAgents.set(session.id, agent) // C3: remember the most recent active session
+    catalogs.set(session.id, assembled.tools.map((t) => ({ name: t.name, description: t.description ?? '' })))
     const st = stateOf(session)
-    // Plan mode is a live system-prompt state; remember it for the L4 gate.
+    // Plan mode is a live system-prompt state; remembered for the L4 gate.
     st.planMode = (assembled.sections ?? []).some(
       (s) => (s.text ?? '').includes('You are in plan mode'),
     )
-    // Durable classification; the entering batch is NOT visible here, so the
-    // first request falls back to simple and complex sessions upgrade from
-    // step 2 (documented one-step persona lag; the budget is batch-correct).
-    const complex = sessionClass(session.events) === 'complex'
+    // Complex class: F1 pre-classified state, or durable events (monotonic).
+    const complex = st.complex || sessionClass(session.events) === 'complex'
     st.complex = complex
     const sections = applyPersona(assembled.sections, personaFor(complex))
-    sections.push(BUDGET_SECTION)
-    sections.push(platformSectionFor(profile))
-    if (complex) sections.push(DELEGATION_SECTION)
-    // Anchor phase: the warm-up turn runs with ZERO tools (short text reply is
-    // guaranteed, so it cannot stall on thinking; the reply promotes the
-    // session and the real task then runs with the full catalog + budget).
-    if (st.anchorInjected && !isPromoted(session)) {
-      return { ...assembled, sections, tools: [] }
+    const keep = (set) => assembled.tools.filter((tool) => set.has(tool.name))
+
+    // Subagents: full catalog (their own toolFilter governs).
+    if ((agent.session?.header?.delegationDepth ?? 0) > 0) {
+      return { ...assembled, sections }
     }
-    if (isPromoted(session)) return { ...assembled, sections }
+    // Warm-up turn: ZERO tools + SIMPLE persona, exactly once (F1: the
+    // pre-classified complex state must not pull the warm-up into planning).
+    if (st.anchorInjected && st.anchorZeroTools && !isPromoted(session)) {
+      st.anchorZeroTools = false
+      return { ...assembled, sections: applyPersona(assembled.sections, personaFor(false)), tools: [] }
+    }
+    // R2: post-compaction — resident set only until NEW progress exists past
+    // the compaction boundary (a compaction rewrites the whole surface).
+    if (postCompaction(session.events)) {
+      return { ...assembled, sections, tools: keep(residentSet) }
+    }
+    // R1: promoted — resident + tools used this session (durable-derived).
+    if (isPromoted(session)) {
+      const keepSet = new Set([...residentSet, ...unlockedTools(session.events, residentSet)])
+      return { ...assembled, sections, tools: keep(keepSet) }
+    }
+    // Bootstrap task request: narrow core surface only (no union — the
+    // resident set enters after the first tool call promotes the session).
     const core = new Set(coreFor(complex))
     const available = new Set(assembled.tools.map((tool) => tool.name))
     const shell = available.has('pwsh') ? 'pwsh' : available.has('bash') ? 'bash' : null
     if (shell === null) return { ...assembled, sections } // no platform shell: keep the full catalog
     core.add(shell)
-    return { ...assembled, sections, tools: assembled.tools.filter((tool) => core.has(tool.name)) }
+    return { ...assembled, sections, tools: keep(core) }
   })
 
-  // ── request budget ladder + truncation recovery ───────────────────────────
-  // prepend:true keeps this listener the OUTERMOST transform.
+  // ── request listener: the ONLY cap is the warm-up anchor cap ──────────────
+  // Non-warm-up requests INHERIT the warm-up's 2048 cap from the persisted
+  // header — release it or the first task request burns its budget thinking.
   ctx.on('agent/request', async (payload, next) => {
     const resolved = await next()
     const agent = payload.agent
     if (agent === undefined) return resolved
     const session = agent.session
-    const complex = sessionClass(session.events) === 'complex'
-
-    if (!isPromoted(session)) {
-      return { ...resolved, maxTokens: complex ? complexBootstrap : simpleBootstrap }
+    const st = stateOf(session)
+    if (st.anchorInjected && st.anchorCap && !isPromoted(session)) {
+      st.anchorCap = false
+      return { ...resolved, maxTokens: cfg.anchorCapMaxTokens }
     }
-
-    const explicit = explicitCaps.get(session.id)
-    if (explicit === 'full') return stripCaps(resolved, injectedCaps)
-    if (typeof explicit === 'number') return { ...resolved, maxTokens: explicit }
-
-    // Truncation recovery: the previous step burned its whole cap thinking.
-    // Release the ladder now — the model gets the promoted bound immediately.
-    if (detectTruncation(session.events, cfg)) {
-      return complex ? stripCaps(resolved, injectedCaps) : { ...resolved, maxTokens: simpleCap }
+    if (resolved.maxTokens === cfg.anchorCapMaxTokens) {
+      const { maxTokens: _drop, ...rest } = resolved
+      return rest
     }
-
-    if (complex) return stripCaps(resolved, injectedCaps)
-    return { ...resolved, maxTokens: simpleCap }
+    return resolved
   }, { prepend: true })
 
-  // ── pre-step: strip (bootstrap) then inject (all advisors) ────────────────
-  // ONE listener, explicit phase order — no cross-listener ordering hazards.
-  // IMPORTANT: the `agent/pre-step` waterfall payload does NOT carry an
-  // `agent` field (agent-loop passes { messages, turn, step, signal } only),
-  // so the agent must come from the initiator scope (`ctx.get('agent')`),
-  // falling back to the assemble-cached handle. Destructuring `{ agent }`
-  // from the payload would silently disable every injection.
+  // ── pre-step: strip (bootstrap) + inject (all advisors) ────────────────────
+  // NOTE: the `agent/pre-step` waterfall payload does NOT carry an `agent`
+  // field — resolve via the initiator scope, falling back to the
+  // assemble-cached handle.
   ctx.on('agent/pre-step', async (payload, next) => {
     const decision = await next()
     if (decision.kind === 'reject') return decision
     try {
-      // C3 initiator cross-talk guard: prefer the most recently assembled
-      // agent for the initiator's session, then the initiator itself, then
-      // any cached handle. (The payload carries no agent field.)
       const initiator = ctx.get('agent')
       let agent = payload.agent
       if (agent === undefined && initiator !== undefined) {
@@ -271,13 +275,14 @@ export function apply(ctx, config) {
       }
       if (agent === undefined) agent = [...agents.values()].at(-1)
       if (agent === undefined) return decision
-
-      // Phase 1: strip automatic injections on the bootstrap request only.
       let messages = Array.isArray(decision.messages) ? decision.messages : []
-      if (!isPromoted(agent.session) && suppressedSources.size > 0) {
+
+      // R3: strip auto-injected context during the bootstrap phase only
+      // (never user/policy messages).
+      if (!isPromoted(agent.session) && cfg.suppressedSources.size > 0) {
         const kept = messages.filter((m) => {
           const kind = m?.source?.kind
-          return typeof kind !== 'string' || !suppressedSources.has(kind)
+          return typeof kind !== 'string' || !cfg.suppressedSources.has(kind)
         })
         if (kept.length !== messages.length) messages = kept
       }
@@ -298,16 +303,18 @@ export function apply(ctx, config) {
         }
       }
 
-      // Phase 2: compute injections from durable events + the entering batch.
+      // Compute injections from durable events + the entering batch.
       const cls = effectiveClass(messages, agent.session.events)
-      st.complex = cls === 'complex'
+      // Monotonic: the pre-step class may ADD complexity but never DOWNGRADE
+      // it (the warm-up batch has no user message → simple — measured: the
+      // V4.2 probe showed it erasing the F1 pre-classification).
+      st.complex = st.complex || cls === 'complex'
       const injections = pendingInjections({
         events: agent.session.events,
         batchMessages: messages,
         cls,
         promoted: isPromoted(agent.session),
         cfg,
-        profile,
         nowMs: Date.now(),
       })
       if (injections.length === 0) {
@@ -326,13 +333,94 @@ export function apply(ctx, config) {
     }
   }, { prepend: true })
 
-  // ── self-monitoring tools (agent-visible cadence loop) ───────────────────
-  const registerTool = (tool) => {
-    ctx.effect(() => ctx.tools.register({
-      ...tool,
-      parameters: toJsonSchema(tool.parameters),
-    }))
-  }
+  // ── process-self guard (SAFETY): native pre-execute deny for shell
+  // commands that kill/restart the harness process itself, until the user
+  // confirms (R4: migrated from tools/execute + custom error result). ───────
+  const guardStats = { hits: 0, vetoes: 0, last: '' }
+  ctx.on('tools/pre-execute', async (exec, next) => {
+    if (!cfg.processSelfGuard) return next()
+    if (exec?.parent !== undefined || exec?.agent === undefined) return next()
+    if (exec.name !== 'pwsh' && exec.name !== 'bash') return next()
+    guardStats.hits += 1
+    const command = typeof exec.arguments?.command === 'string' ? exec.arguments.command : ''
+    const matched = selfKillDetect(command, process.pid, process.ppid)
+    guardStats.last = `${exec.name}|${matched}|${command.slice(0, 80)}`
+    if (!matched) return next()
+    const session = exec.agent.session
+    const events = Array.isArray(session?.events) ? session.events : []
+    // The user explicitly asked for a restart/kill → the model may proceed.
+    if (events.some((e) => e.type === 'user/message' && e.data?.source?.kind === 'user'
+      && userAskedRestart(extractText(e.data)))) return next()
+    const first = killVetoed.get(session.id)
+    if (first !== undefined && events.some((e) => e.type === 'user/message'
+      && e.data?.source?.kind === 'user' && e.seq > first)) {
+      return next() // user replied after the reminder → confirmed
+    }
+    if (first === undefined) {
+      killVetoed.set(session.id, events.length > 0 ? events.at(-1).seq : 0)
+    }
+    guardStats.vetoes += 1
+    return { kind: 'deny', reason: selfKillVetoMessage(process.pid) }
+  })
+
+  // ── V4.1 R1: on-demand tool discovery (read-only; the resident filter is
+  // conditioning, the sandbox/approval stack is the real boundary). ─────────
+  ctx.effect(() => ctx.tools.register({
+    name: 'tool_search',
+    description: "Search the full tool catalog by name or description substring and list matching tools. Tools not currently visible can be called directly once discovered — the catalog keeps them unlocked for this session after their first use.",
+    parameters: {
+      type: 'object',
+      properties: { query: { type: 'string', description: 'substring to match against tool names and descriptions' } },
+      required: ['query'],
+      additionalProperties: false,
+    },
+    output: { schema: { type: 'string' }, render: (_a, v) => [{ type: 'text', text: v }] },
+    execute(args) {
+      const session = currentSession()
+      const cat = session === undefined ? [] : (catalogs.get(session.id) ?? [])
+      const q = String(args?.query ?? '').toLowerCase().trim()
+      const hits = cat.filter((t) => !q || t.name.toLowerCase().includes(q) || (t.description ?? '').toLowerCase().includes(q))
+      if (hits.length === 0) return `no tools match "${args?.query}"`
+      return hits.slice(0, 30).map((t) => `- ${t.name}: ${(t.description ?? '').slice(0, 160)}`).join('\n')
+    },
+  }))
+
+  // ── self-monitoring tool: trace_status (read-only, lean) ──────────────────
+  ctx.effect(() => ctx.tools.register({
+    name: 'trace_status',
+    description: "Show this session's cadence state: complexity class, phase, step/tool counts, plan-mode flag, anchor state, process-self-guard stats, deadlock-ladder counters, subagent-timeout steers, reasoning-block median (p50), post-compaction state and unlocked-tool count. Read-only.",
+    parameters: { type: 'object', properties: {}, required: [], additionalProperties: false },
+    output: { schema: { type: 'string' }, render: (_a, v) => [{ type: 'text', text: v }] },
+    execute() {
+      const session = currentSession()
+      if (session === undefined) return 'no agent session'
+      const st = stateOf(session)
+      const ev = session.events
+      const phase = isPromoted(session) ? 'promoted' : 'bootstrap'
+      const steps = ev.filter((e) => e.type === 'step/start').length
+      const calls = ev.filter((e) => e.type === 'tool/call').length
+      const unlocked = unlockedTools(ev, residentSet)
+      return [
+        `build=v4.4`,
+        `complexity=${st.complex ? 'complex' : 'simple'}`,
+        `preClass=${st.preClass ? 'yes' : 'no'}`,
+        `phase=${phase}`,
+        `controlled=${postCompaction(ev) ? 'yes' : 'no'}`,
+        `steps=${steps} calls=${calls}`,
+        `planMode=${st.planMode ? 'yes' : 'no'}`,
+        `anchor=${st.anchorInjected ? 'yes' : 'no'}`,
+        `selfGuard=${cfg.processSelfGuard ? 'on' : 'off'}`,
+        `guardHits=${guardStats.hits} vetoes=${guardStats.vetoes} last=${guardStats.last || '-'}`,
+        `blockP50=${blockMedian(ev)}`,
+        `unlocked=${unlocked.size}`,
+        `stallSteers=${countMarkers(ev, '进度停滞')}`,
+        `verifiedDeadlocks=${countMarkers(ev, '已核验卡死')}`,
+        `pauses=${countMarkers(ev, '暂停指令')}`,
+        `subagentSteers=${countMarkers(ev, 'Cadence 子代理超时')}`,
+        `convergeSteers=${countMarkers(ev, 'Cadence 收敛')}`,
+      ].join('\n')
+    },
+  }))
 
   function currentSession() {
     const initiator = ctx.get('agent')
@@ -340,92 +428,4 @@ export function apply(ctx, config) {
     const last = [...agents.values()].at(-1)
     return last?.session
   }
-
-  function snapshot(session) {
-    const st = stateOf(session)
-    const phase = isPromoted(session) ? 'promoted' : 'bootstrap'
-    const explicit = explicitCaps.get(session.id)
-    const budget = explicit === undefined
-      ? phase === 'bootstrap'
-        ? String(st.complex ? complexBootstrap : simpleBootstrap)
-        : st.complex ? 'full' : String(simpleCap)
-      : explicit === 'full' ? 'full' : String(explicit)
-    const steps = session.events.filter((e) => e.type === 'step/start').length
-    const calls = session.events.filter((e) => e.type === 'tool/call').length
-    return {
-      st,
-      phase,
-      budget,
-      steps,
-      calls,
-      band: budgetBandFor(st.complex, phase === 'promoted'),
-    }
-  }
-
-  registerTool({
-    name: 'trace_status',
-    description: "Show this session's cadence state: complexity class, phase, budget band, step/tool counts, sentinel counters (stall/verified/pause markers, truncations, utilization steers, shell errors, delegation advice), plan-mode flag, and current output budget. Read-only.",
-    parameters: {},
-    output: { schema: { type: 'string' }, render: (_a, v) => [{ type: 'text', text: v }] },
-    execute() {
-      const session = currentSession()
-      if (session === undefined) return 'no agent session'
-      const s = snapshot(session)
-      const ev = session.events
-      const caps = [simpleBootstrap, simpleCap, complexBootstrap]
-      return [
-        `complexity=${s.st.complex ? 'complex' : 'simple'}`,
-        `phase=${s.phase}`,
-        `band=${s.band}`,
-        `steps=${s.steps} calls=${s.calls}`,
-        `planMode=${s.st.planMode ? 'yes' : 'no'}`,
-        `anchor=${s.st.anchorInjected ? 'yes' : 'no'}`,
-        `truncations=${countTruncated(ev, caps)}`,
-        `stallSteers=${countMarkers(ev, '进度停滞')}`,
-        `verifiedDeadlocks=${countMarkers(ev, '已核验卡死')}`,
-        `pauses=${countMarkers(ev, '暂停指令')}`,
-        `utilizationSteers=${countMarkers(ev, 'Cadence 利用率')}`,
-        `shellChecks=${countMarkers(ev, 'Cadence shell 检查')}`,
-        `delegationAdvice=${countMarkers(ev, 'Cadence 委派建议')}`,
-        `budget=${s.budget}`,
-      ].join('\n')
-    },
-  })
-
-  registerTool({
-    name: 'trace_style',
-    description: "Show this session's trajectory-style indicators (diagnostics only): reasoning char count, Chinese share, we/let me/I'll densities per 10k chars, and the share of 'let me' contexts that are verification-flavoured (recall/check/verify — healthy) vs trial-flavoured (try/guess — risky). Read-only.",
-    parameters: {},
-    output: { schema: { type: 'string' }, render: (_a, v) => [{ type: 'text', text: v }] },
-    execute() {
-      const session = currentSession()
-      if (session === undefined) return 'no agent session'
-      const ti = trajectoryIndicators(session.events)
-      return [
-        `reasoningChars=${ti.reasoningChars}`,
-        `cnRatio=${ti.cnRatioPct}%`,
-        `we=${ti.wePer10k} letMe=${ti.letMePer10k} lets=${ti.letsPer10k} ill=${ti.illPer10k} (per10k)`,
-        `letMeVerify=${ti.letMeVerifyShare}% letMeTrial=${ti.letMeTrialShare}%`,
-      ].join('\n')
-    },
-  })
-
-  registerTool({
-    name: 'trace_tune',
-    description: "Tune this session's cadence: set an explicit output budget for the next requests (positive integer token count), 'full' to lift every cadence cap, or 'auto' to return to the automatic schedule (bounded for simple tasks, unbounded for complex ones). The next request applies it.",
-    parameters: {
-      cap: { type: 'string', required: true, description: "'auto', 'full', or a positive integer token cap" },
-    },
-    output: { schema: { type: 'string' }, render: (_a, v) => [{ type: 'text', text: v }] },
-    execute(args) {
-      const session = currentSession()
-      if (session === undefined) return 'no agent session'
-      const cap = parseCap(args.cap)
-      if (cap === null) return `invalid cap "${args.cap}": use auto, full, or a positive integer`
-      if (cap === 'auto') explicitCaps.delete(session.id)
-      else explicitCaps.set(session.id, cap)
-      const s = snapshot(session)
-      return `budget=${s.budget} — next request applies`
-    },
-  })
 }

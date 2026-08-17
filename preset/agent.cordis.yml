@@ -1,110 +1,110 @@
-# The `cadence-standard` experimental preset (v2.3.1): thinking-budget pacing.
+# cadence-standard preset (v4.4, LEAN): pacing + safety.
 #
-# v2 mechanisms (see cadence-core.mjs / cadence-bootstrap.mjs for the
-# implementation and the security invariants):
+# What remains: anchor first turn (0 tools + the only cap), monotonic
+# classification with F1 inbox-insert pre-classification (the FIRST task
+# request carries the complex persona + complex core), narrow first-task
+# surface (promoteOn=tool-call), resident catalog after promotion (core work
+# tools + vision + todo_write + SAFETY VALVES + preset tools; heavier tools
+# found via tool_search unlock on first use), compaction epoch (R2),
+# bootstrap context strip + one-time instruction hint (R3), process-self
+# guard on tools/pre-execute deny (R4), final-check boundary fix (F4: the
+# in-flight step counts), verification texts require the artifact's REAL
+# form (F7), per-message guides (relaxed), metacognition checkpoints
+# (reflection + final check), block-length convergence steer (p50 ≥ 2500),
+# safety trio precise (deadlock ladder L1–L4, process-self guard, subagent
+# timeout), in-preset hot code reloader (cadence_reload), trace_status +
+# tool_search (read-only).
 #
-#   - ANCHORED FIRST TURN: a zero-tool, low-budget warm-up turn (0 tools,
-#     small budget) before the real task, eliminating the turn-1
-#     thinking-stall (`anchorFirstTurn: true`).
-#   - BUDGET AWARENESS: a constant neutral budget section plus band messages
-#     (small 2048 / medium 4096 / large roomy) injected when the band changes,
-#     so the model knows its cap BEFORE thinking; truncation of a step that
-#     burned its whole cap releases the next request's budget and injects a
-#     recovery message.
-#   - MONOTONIC CLASSIFICATION: simple by default, first user message sets the
-#     class, complex messages upgrade permanently. Batch-aware at pre-step.
-#   - PLATFORM HINTS: PowerShell guidance on win32 + shell-syntax-error
-#     detection (`platform: auto | win32 | posix`).
-#   - PLAN-FORWARD UTILIZATION: slow progress steers the model to move planned,
-#     independent verification work earlier — never new actions.
-#   - VERIFIED DEADLOCK LADDER: suspicion (L1) → fingerprint-verified (L2) →
-#     pause-and-ask-user via ask_user_question (L3) → bounded reminder (L3b) →
-#     optional escalation (L4, `escalateAfterIgnore: true`, plan-mode-safe,
-#     cancel WITHOUT directive — the user decides afterwards).
-#   - DELEGATION ADVISOR: complex code-fixing sessions get one suggestion to
-#     delegate an independent review to a subagent (read-only discipline;
-#     targeted numeric-review variant).
-#   - SUBAGENT TIMEOUT REMINDER: settled-aware reminder when a delegated
-#     subagent runs too long (`subagentTimeoutMin: 15`).
-#   - TODO-SYNC ADVISOR: keeps the UI todo list honest when long parallel work
-#     stalls the model's own todo_write cadence (`todoSyncAdvisor: true`).
-#   - VISUAL-DEPTH DEEPENING: gentle steering toward screenshot + read_image
-#     verification when vision-relevant work is detected; fires only AFTER the
-#     model already used vision on its own (`visualDepthAdvisor: true`).
-#   - TRAJECTORY DIAGNOSTICS: trace_status / trace_style for cadence state and
-#     trajectory-style indicators; trace_tune adjusts the output budget only.
-#   - PROMOTION: full Standard tools after the first durable promotion signal
-#     (`promoteOn: either` — first tool call or first assistant message).
+# History (kept brief): V4.0 de-fit removed budget bands/Flash anchors/
+# trajectory/env-stuck/score-deliver/delegation/todo sync/utilization/
+# guide-frequency/trace_style/platform/file-discipline. V4.1 added the
+# resident catalog + compaction epoch + strip/hint + pre-execute guard.
+# V4.2 added F1 (first-request class fix) + request_tool + frequent tier.
+# V4.3 REMOVED request_tool + frequent tier (measured: zero calls — a tool
+# not on the surface is never used) and made vision resident; fixed the
+# finalCheckDue boundary (V4.2 session: 8 steps after final write, no
+# acceptance). V4.4: todo_write resident (Mona 12/14 used it, V4.1–V4.3 had
+# 0 uses with unplanned iteration); real-form verification wording; a
+# windowed block-length trigger was calibrated and REJECTED (mis-triggers
+# the good V4.1 session). A failure-turn detector was drafted and REMOVED
+# as over-specialized (zero real triggers, overlaps the deadlock ladder).
 #
-# All injections are static texts, idempotent (durable markers), and routed
-# through the agent/pre-step waterfall (strip first, inject second). The
-# preset registers no fs/shell/permission tools; trace_status is read-only
-# and trace_tune only changes the output budget.
-#
-# This file is an AGENT-PLANE composition. The roster mounts it ONCE under a
-# standing scope; every session naming it joins by scope parentage, so the
-# tools and prompt sections registered here cover each joined agent while a
-# session's own state stays keyed per Session/Agent inside the plugins. The
-# host composition (`base.cordis.yml` + `web.cordis.yml`) keeps everything a
-# preset must not own: the registries themselves, the sandbox and approval
-# stack, persistence, and the model route.
-#
-# A service row here MUST sit inside a group carrying an `isolate` realm.
-# Without one it publishes into the root realm, where it is process-global —
-# another preset publishing the same name collides, and a host reader would
-# resolve one preset's instance for every session; `dsh-agent-presets` rejects
-# that at mount. `true` means an entry-local realm: this standing mount's own
-# private instance, apart from every other preset's. (A shared label does NOT
-# pool instances — `provide()` throws on the second registration under the
-# same realm symbol; labels join REALMS, and are not what this file needs.)
+# Deployment: config values are re-read per session JOIN (no restart for
+# value changes). CODE (.mjs) is imported ONCE per process (ES module
+# cache); hot reload WITHOUT restart: run `cadence_reload` in any session
+# (verify-first temp-copy graph check → purge Node's ESM cache → bump the
+# stamp below) — the NEXT NEW session mounts the new code. `dev_reload_*`
+# cannot target preset rows (they are not injector packages).
+# Design rules: no task-domain words; thresholds calibrated across task
+# families; no model branches; no tool-family-specialized steers; safety
+# texts stay precise; tool-surface filtering is conditioning, never a
+# security control.
 
 # ── bootstrap (must stay FIRST) ─────────────────────────────────────────────
-
-# DEPLOYMENT NOTE: preset .mjs modules are loaded ONCE per harness process
-# (ES module cache) and cached for the process lifetime, while this YAML's
-# config is re-read per session join. After editing cadence-core.mjs or
-# cadence-bootstrap.mjs you MUST RESTART the harness — otherwise a session
-# runs old code with new config (measured failure mode: V2 config with V1
-# code, all V2 mechanisms silently absent).
-#
-# The cadence plugin owns the budget ladder, the band messages, the
-# first-request tool surface, the context strip, the guidance injections,
-# the sentinels and the self-monitoring tools. Its pre-step and request
-# listeners register with `prepend: true`; the pre-step listener strips
-# (bootstrap phase only) and then injects inside ONE listener. The pre-step
-# listener resolves the agent via `ctx.get('agent')` because the
-# `agent/pre-step` waterfall payload carries no agent field.
+# Owns the anchor turn, tool-surface phases, guides, checkpoints, safety
+# sentinels and diagnostics. Pre-step/request listeners register with
+# `prepend: true`; the pre-step listener resolves the agent via `ctx.get`
+# because the `agent/pre-step` payload carries no agent field.
 - id: cadence-bootstrap
   name: ./cadence-bootstrap.mjs
   config:
-    simpleBootstrapMaxTokens: 2048
-    simpleCapMaxTokens: 4096
-    complexBootstrapMaxTokens: 16384
-    promoteOn: either
-    suppressedContextSources: [agent-instructions, skill-catalog]
-    # V2.2 — anchor first turn: one low-load warm-up turn (0 tools, small
-    # budget) before the real task, eliminating the turn-1 thinking-stall.
+    # V2.2 — one 0-tool warm-up turn before the real task.
     anchorFirstTurn: true
     anchorText: Cadence 热身：本轮不执行任务、不调用任何工具。请用一两句话确认你已就绪，并简述你接下来会如何处理下一条消息。不要思考、不要规划、不要使用工具。
-    # V2.2 — platform adaptation: auto | win32 | posix (override for testing).
-    platform: auto
-    # V2.2 — security: remind the model when a delegated subagent runs too long.
-    subagentTimeoutMin: 15
-    # V2.3 — todo sync: keep the UI todo list honest when long parallel work
-    # (delegation, phase shifts) stalls the model's own todo_write cadence.
-    todoSyncAdvisor: true
-    todoSyncAfterSteps: 12
-    # V2.3 — visual depth deepening (gentle): fires only AFTER the model has
-    # already used vision on its own; never pushes vision usage.
-    visualDepthAdvisor: true
-    platformHints: true
-    utilizationAdvisor: true
+    # V4.0 — the ONLY remaining cap: the warm-up request.
+    anchorCapMaxTokens: 2048
+    # V4.0 — tool-call only: the warm-up reply does NOT promote.
+    promoteOn: tool-call
+    # V2.4 — metacognition checkpoints, once per session each.
+    reflectionAdvisor: true
+    reflectionAfterSteps: 12
+    finalCheckAdvisor: true
+    finalCheckAfterSteps: 8
+    # V2 — verified deadlock ladder (SAFETY, precise): suspicion (L1) →
+    # verified (L2) → pause-and-ask (L3) → reminder (L3b) → optional L4
+    # (plan-mode-safe cancel WITHOUT directive).
     deadlockDetector: true
-    delegationAdvisor: true
     escalateAfterIgnore: false
     maxRepeats: 4
     maxIdenticalFailures: 3
     graceStepsAfterSteer: 2
+    # V3.1 — process-self guard (SAFETY, precise): shell commands killing/
+    # restarting the harness process (own PID, parent, or name-wide node kill)
+    # are vetoed at tools/execute until a real user message confirms.
+    processSelfGuard: true
+    # V2.2 — security: remind when a delegated subagent runs too long.
+    subagentTimeoutMin: 15
+    # V4.0 — block-length convergence steer (once per session): running
+    # reasoning-block median crossing blockP50Threshold gets one "converge"
+    # nudge (calibrated on 11 sessions: only the worst crosses 2500).
+    blockLengthSteer: true
+    blockP50Threshold: 2500
+    blockLengthAfterSteps: 10
+    # V4.1 (R1) — resident catalog (conditioning, NOT a security boundary):
+    # core work tools + vision + todo_write + SAFETY VALVES + preset tools,
+    # plus whatever the model used beyond it (durable-derived). Heavier tools
+    # are found via tool_search and unlock on first use. V4.3: vision is
+    # resident (V4.1/V4.2 sessions wanted it but unlock-on-first-use is a
+    # dead loop for fresh sessions); request_tool + frequent tier REMOVED
+    # (measured: zero calls — a tool not on the surface is never used).
+    # V4.4: todo_write joins resident (task-list carrier; Mona 12/14 used
+    # it during planned work, V4.1–V4.3 had 0 uses with unplanned iteration).
+    residentTools: [read, write, edit, glob, grep, pwsh, bash, vision, todo_write, subagent, subagent_fork, ask_user_question, list_agents, interrupt_agent, send_message, trace_status, cadence_reload, tool_search]
+    # V4.1 (R3) — bootstrap-phase context strip (never user/policy messages).
+    suppressedContextSources: [agent-instructions, skill-catalog]
+    # V4.1 (R3) — one static instruction hint after promotion (replaces the
+    # AGENTS.md/CLAUDE.md digest row, which is REMOVED from this composition).
+    instructionHint: true
+
+# ── code reloader (V3.0, custom) ────────────────────────────────────────────
+# In-preset hot reload WITHOUT restart: `cadence_reload` verifies the .mjs
+# files from a throwaway temp copy (full graph), purges the real URLs from
+# Node's ESM cache, then bumps the stamp below — the roster's generation
+# stamp is this file's {mtimeMs,size}, so the NEXT NEW session mounts the
+# new code. Existing sessions keep their generation.
+- id: cadence-reloader
+  name: ./cadence-reloader.mjs
+  config: {}
 
 # ── identity ────────────────────────────────────────────────────────────────
 
@@ -116,21 +116,12 @@
   config:
     text: You are a helpful assistant.
 
-# Workspace instruction digest (AGENTS.md / CLAUDE.md). Its pre-step injection
-# is stripped from request #1 by the cadence row above and returns from
-# request #2 on, so the bootstrap request sees a clean surface.
-- id: agent-instructions
-  name: '@deepseek-ai/dsh-agent-instructions'
-  config:
-    maxBytes: 65536
-
 # ── shell ───────────────────────────────────────────────────────────────────
 
 # `shell-env` stays in the HOST composition: `apps/cli/src/web.ts` injects it to
 # publish `DSH_WEB_URL`/`DSH_WEB_MODE`, and a host row that injects a service is
 # the criterion for host-plane ownership — injection resolves before any session
-# exists, so there is no agent to key by. Behind a preset realm those variables
-# never reached the model's shell at all. Both shell tools consume the host
+# exists, so there is no agent to key by. Both shell tools consume the host
 # registry from here; their executors (`bash-sandbox`/`pwsh-sandbox`) are
 # host-plane too.
 - id: tool-bash
@@ -205,7 +196,7 @@
         section: |
               You are in plan mode. Stay in plan mode until exit_plan_mode succeeds or the user switches the session mode. Imperative language to implement changes means plan the implementation, not execute it. A user's conversational agreement — including an answer confirming something you asked — approves nothing and does not end plan mode; fold the confirmed decision into the plan and submit it through exit_plan_mode.
 
-              Explore first with non-mutating reads, searches, and checks so the plan is grounded in the actual repository; do not edit or write files, change configuration, run formatters or generators that rewrite tracked files, or commit. Prefer existing functions and patterns over new machinery.
+              Explore first. Use non-mutating reads, searches, static analysis, and checks to ground the plan in the actual repository. Do not edit or write files, change configuration, run formatters or code generation that rewrites tracked files, commit, or otherwise carry out the plan. Prefer existing functions and patterns over new machinery.
 
               The tool catalog stays the same across modes for request-cache stability. These plan-mode rules override any later tool description or guidance that suggests using mutation tools; those tools remain listed to keep the tool catalog unchanged. Do not use todo_write to track this planning phase: it tracks implementation after an approved plan, while the plan itself belongs in exit_plan_mode.
 
@@ -343,3 +334,5 @@
   config:
     fetch: false
     searchTimeoutMs: 45000
+
+# cadence-reload-stamp: 2026-08-17T11:01:58.153Z

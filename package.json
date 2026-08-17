@@ -2,7 +2,7 @@
   "name": "dsh-cadence-standard",
   "version": "0.1.0",
   "private": true,
-  "description": "Thinking-budget pacing preset for DeepSeek Harness (Cadence Standard v2.3.1)",
+  "description": "Thinking-budget pacing preset for DeepSeek Harness (Cadence Standard v4.4, LEAN)",
   "type": "module",
   "license": "MIT",
   "repository": {
