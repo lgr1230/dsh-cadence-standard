@@ -1,4 +1,4 @@
-# cadence-standard preset (v4.4, LEAN): pacing + safety.
+# cadence-standard preset (v4.5, LEAN): pacing + safety.
 #
 # What remains: anchor first turn (0 tools + the only cap), monotonic
 # classification with F1 inbox-insert pre-classification (the FIRST task
@@ -28,6 +28,11 @@
 # windowed block-length trigger was calibrated and REJECTED (mis-triggers
 # the good V4.1 session). A failure-turn detector was drafted and REMOVED
 # as over-specialized (zero real triggers, overlaps the deadlock ladder).
+# V4.5: means-cost steer + unconverged-means backstop (session-19: ~100 min
+# burned on 10 acceptance runs of the SAME means, different failure each
+# round — invisible to the identical-command/failure ladder); tool_search
+# token-AND matching (whole-string `includes` never matched "vision image" —
+# session-19 vision discoverability loss).
 #
 # Deployment: config values are re-read per session JOIN (no restart for
 # value changes). CODE (.mjs) is imported ONCE per process (ES module
@@ -60,6 +65,20 @@
     reflectionAfterSteps: 12
     finalCheckAdvisor: true
     finalCheckAfterSteps: 8
+    # V4.5 — means-level cost/unconverged detection (session-19 calibration):
+    # a MEANS = platform command + first script path; interleaved writes do
+    # NOT reset it (a debugging loop is not progress), and cumulative
+    # wall-time is required so quick retries (downloads/fast scripts) never
+    # fire. Soft layer (3 runs / 5 min, complex) reminds to re-evaluate the
+    # means; hard backstop (5 runs / 15 min, any task) demands re-evaluation
+    # of the means itself. Calibrated on 6 sessions: 19 fires at run 5
+    # (~50 min saved); 05/06/16/17/18 silent.
+    meansCostAdvisor: true
+    meansCostRuns: 3
+    meansCostMinSec: 300
+    unconvergedDetector: true
+    unconvergedRuns: 5
+    unconvergedMinSec: 900
     # V2 — verified deadlock ladder (SAFETY, precise): suspicion (L1) →
     # verified (L2) → pause-and-ask (L3) → reminder (L3b) → optional L4
     # (plan-mode-safe cancel WITHOUT directive).
@@ -335,4 +354,4 @@
     fetch: false
     searchTimeoutMs: 45000
 
-# cadence-reload-stamp: 2026-08-17T11:01:58.153Z
+# cadence-reload-stamp: 2026-08-17T15:11:06.382Z

@@ -1,7 +1,7 @@
 # dsh-cadence-standard
 
 一个实验性的 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)
-智能体预设：对整个会话的思考预算进行节奏管理 —— **Cadence Standard v4.4**（思考预算节奏，LEAN）。
+智能体预设：对整个会话的思考预算进行节奏管理 —— **Cadence Standard v4.5**（思考预算节奏，LEAN）。
 
 这是一个社区项目，并非 DeepSeek 官方预设，与 DeepSeek 无隶属或背书关系。
 
@@ -31,6 +31,8 @@ Cadence Standard 通过 agent pre-step 瀑布流注入静态、幂等的引导�
 | **进程自我保护（R4）** | 会终止/重启 harness 进程本身的 shell 命令在 `tools/pre-execute`（原生 deny）被拦截，直到用户确认。 |
 | **每消息引导** | 每条真实用户消息获得一条引导：复杂任务为完整的"输入驱动方法对比"（数据/参考驱动 vs 闭路自造），简单任务为一句直行提示。 |
 | **元认知检查点** | 任务中自省（四问，含真实形态验证）+ 交付前验收（对照任务原文逐项核对；必须作用于产物完整形态）。 |
+| **手段成本引导（V4.5）** | 同一执行/验证手段多次未成功且累计耗时较长时（默认 3 次 / 5 分钟，复杂任务），注入一次"评估手段本身"的提醒——单次成本、受限运行方式、可缩小范围、更低成本替代路径。 |
+| **手段复查（V4.5）** | 硬性兜底（默认 5 次 / 15 分钟，任意任务）：同一手段重复多次、累计耗时很长、最近一次仍失败时，要求重新评估手段本身（成本/运行方式/范围/替代路径），而非只加大预算。按手段指纹（平台命令 + 首个脚本路径）统计，穿插写入不重置；累计耗时为门槛，快速重试不误伤。基于 6 个已记录会话校准（19 号在第 5 轮触发，约省 50 分钟；05/06/16/17/18 全部静默）。 |
 | **推理块收敛转向** | 会话运行中推理块中位数越过 2500 时注入一次"收敛"提示（基于 11 个已记录会话校准）。 |
 | **验证过的死锁阶梯** | 怀疑 (L1) → 指纹验证 (L2) → 通过 `ask_user_question` 暂停询问 (L3) → 有界提醒 (L3b) → 可选升级 (L4，plan-mode 安全，cancel 不带指令)。 |
 | **子代理超时提醒** | 委派的子代理运行过久时提醒（默认 15 分钟，感知已结算状态）。 |
@@ -73,15 +75,17 @@ cp -r preset/* ~/.dsh/.agent-presets/cadence-standard/
 | `subagentTimeoutMin` | 15 | 子代理超时提醒 |
 | `blockP50Threshold` | 2500 | 收敛转向阈值（推理块中位数） |
 | `escalateAfterIgnore` | `false` | 反复忽略后的 L4 升级（plan-mode 安全） |
+| `meansCostAdvisor` / `meansCostRuns` / `meansCostMinSec` | `true` / 3 / 300 | 手段成本软引导（复杂任务；次数 / 累计秒数） |
+| `unconvergedDetector` / `unconvergedRuns` / `unconvergedMinSec` | `true` / 5 / 900 | 手段复查硬兜底（任意任务；次数 / 累计秒数） |
 
 ## 测试
 
 ```bash
-npm test        # node --test（test/cadence.test.mjs，124 项断言）
+npm test        # node --test（test/cadence.test.mjs，138 项断言）
 npm run check   # 语法检查预设模块后运行测试
 ```
 
-测试套件用最小 fake Cordis 上下文练习 bootstrap 注册的每个监听器，并覆盖核心检测逻辑的纯函数测试：分类、persona、引导、锚定 + F1 预分类、提升、常驻目录 + 压缩纪元 + 剥离/提示、元认知检查点、死锁阶梯 L1–L4 全链、进程自我保护矩阵、子代理超时、收敛转向（fixture + 校准）、验证文本、重载器 + trace_status + tool_search。
+测试套件用最小 fake Cordis 上下文练习 bootstrap 注册的每个监听器，并覆盖核心检测逻辑的纯函数测试：分类、persona、引导、锚定 + F1 预分类、提升、常驻目录 + 压缩纪元 + 剥离/提示、元认知检查点、死锁阶梯 L1–L4 全链、进程自我保护矩阵、子代理超时、收敛转向（fixture + 校准）、验证文本、手段检测（V4.5，含 19 号回归）、重载器 + trace_status + tool_search。
 
 ## License
 

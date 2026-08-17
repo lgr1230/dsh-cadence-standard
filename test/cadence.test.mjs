@@ -1,14 +1,16 @@
-// Functional test suite for cadence-standard v4.4 (LEAN): a minimal fake
+// Functional test suite for cadence-standard v4.5 (LEAN): a minimal fake
 // Cordis ctx exercises every listener the bootstrap registers, plus
 // pure-function tests for the core detection logic.
 //
-// v4.4 (124 assertions): covers the full V4.4 mechanism set — anchor turn
+// v4.5 (adds on v4.4's 124): means-cost steer + unconverged-means backstop
+// (session-19 calibration) and token-AND tool_search matching ("vision
+// image" regression). Covers the full V4.4/V4.5 mechanism set — anchor turn
 // + F1 pre-classification, narrow first-task surface + promotion, resident
 // catalog (17 tools incl. vision + todo_write), compaction epoch, bootstrap
 // strip + instruction hint, metacognition checkpoints (reflection + final
 // check with the F4 boundary fix), safety trio (deadlock ladder L1–L4,
 // process-self guard, subagent timeout), convergence steer, verification
-// texts, reloader + trace_status + tool_search.
+// texts, means detection, reloader + trace_status + tool_search.
 import { apply } from '../preset/cadence-bootstrap.mjs'
 import * as core from '../preset/cadence-core.mjs'
 
@@ -362,7 +364,7 @@ const simpleText = '写个 hello 脚本'
     JSON.stringify(names.sort()) === JSON.stringify(['tool_search', 'trace_status'].sort()), names.join(','))
   const status = hh.registered.find((t) => t.name === 'trace_status')
   const out = await status.execute()
-  check('trace_status: lean fields', /build=v4\.4/.test(out) && /blockP50=0/.test(out) && !/band=|budget=|frequent=|requested=/.test(out), out.replace(/\n/g, ' | '))
+  check('trace_status: lean fields', /build=v4\.5/.test(out) && /blockP50=0/.test(out) && !/band=|budget=|frequent=|requested=/.test(out), out.replace(/\n/g, ' | '))
 }
 
 // ── 12. V4.1: resident catalog, compaction epoch, strip, hint ───────────────
@@ -624,6 +626,78 @@ const simpleText = '写个 hello 脚本'
   check('R1: tool_search finds by description', out1.includes('vision') && !out1.includes('read'), out1.replace(/\n/g, ' | '))
   const out2 = await ts.execute({ query: 'no-such-tool' })
   check('R1: tool_search miss returns empty note', out2.includes('no tools match'), out2)
+}
+
+// ── 15. V4.5: token-AND tool_search + means-level detection ─────────────────
+{
+  // matchCatalog: token-AND semantics (session-19 regression: "vision image"
+  // was a whole-string substring and never matched).
+  const cat = [
+    { name: 'vision', description: 'Analyze one or more images through an external vision-language model (VLM) and return a plain-text description.' },
+    { name: 'read', description: 'Read a UTF-8 text file.' },
+    { name: 'pwsh', description: 'Execute a PowerShell command.' },
+  ]
+  check('V4.5: "vision image" matches vision (regression)', core.matchCatalog('vision image', cat).some((t) => t.name === 'vision'), 'vision image')
+  check('V4.5: "vision image" excludes read', !core.matchCatalog('vision image', cat).some((t) => t.name === 'read'), 'no read')
+  check('V4.5: multi-word AND "vision analyze description" matches', core.matchCatalog('vision analyze description', cat).some((t) => t.name === 'vision'), '3 words')
+  check('V4.5: unrelated words miss', core.matchCatalog('screenshot photo', cat).length === 0, 'miss')
+  check('V4.5: empty query returns empty', core.matchCatalog('', cat).length === 0, 'empty q')
+  check('V4.5: empty catalog returns empty', core.matchCatalog('vision', []).length === 0, 'empty cat')
+
+  // meansStats: session-19-shaped events (5 runs of the same script,
+  // cumulative > 15 min, last run failed) must fire.
+  const mcmd = (seq, callId, command, t) => ({ type: 'tool/call', seq, time: t, data: { name: 'pwsh', callId, arguments: JSON.stringify({ command }) } })
+  const mres = (seq, callId, text, t) => ({ type: 'tool/result', seq, time: t, data: { message: { content: [{ type: 'tool-result', toolCallId: callId, content: [{ type: 'text', text }] }] } } })
+  const slowRuns = []
+  for (let i = 1; i <= 5; i++) {
+    slowRuns.push(mcmd(i, `c${i}`, `node tools\\headless_test.mjs http://127.0.0.1:8080/ > test\\out\\harness_run${i}.log 2>&1; Write-Output "exit=$LASTEXITCODE"`, i * 1000))
+    slowRuns.push(mres(100 + i, `c${i}`, 'exit=1 === scenario: equatorial FAILED', i * 1000 + 200000))
+  }
+  const st = core.meansStats(slowRuns, { minRuns: 5, minAccMs: 900000 })
+  check('V4.5: 5 slow failing runs → unconverged', st !== null && st.runs === 5 && st.accMs >= 900000, JSON.stringify(st))
+
+  // Same shape but the LAST run succeeded → converged, no fire.
+  const converged = [...slowRuns.slice(0, -1), mres(105, 'c5', '65/65 PASS exit=0', 5 * 1000 + 200000)]
+  check('V4.5: last run succeeded → no fire', core.meansStats(converged, { minRuns: 5, minAccMs: 900000 }) === null, 'converged')
+
+  // Different scripts (12 fast physics runs) never fire: runs per means < 5.
+  const fastMany = []
+  for (let i = 1; i <= 12; i++) {
+    fastMany.push(mcmd(i, `p${i}`, `node tools\\physics_test.mjs`, i * 1000))
+    fastMany.push(mres(200 + i, `p${i}`, 'assert failed', i * 1000 + 2000))
+  }
+  check('V4.5: many fast runs of another means → no fire', core.meansStats(fastMany, { minRuns: 5, minAccMs: 900000 }) === null, 'fast other means')
+
+  // Duration gate: 5 slow-failing runs but cumulative < 15 min → no fire.
+  const shortAcc = []
+  for (let i = 1; i <= 5; i++) {
+    shortAcc.push(mcmd(i, `s${i}`, `node tools\\headless_test.mjs x`, i * 1000))
+    shortAcc.push(mres(300 + i, `s${i}`, 'exit=1 FAILED', i * 1000 + 60000))
+  }
+  check('V4.5: cumulative < threshold → no fire', core.meansStats(shortAcc, { minRuns: 5, minAccMs: 900000 }) === null, 'short acc')
+
+  // Soft layer threshold: 3 runs / 5 min fires the soft steer (hard silent).
+  const softRuns = slowRuns.slice(0, 6)
+  const softInj = core.pendingInjections({
+    events: [{ type: 'user/message', seq: 1, data: userMsg('u', complexText) }, { type: 'tool/call', seq: 2, data: { name: 'read', arguments: '{}' } }, ...softRuns],
+    batchMessages: [], cls: 'complex', promoted: true, cfg: {}, nowMs: 0,
+  })
+  const softTexts = softInj.map((i) => i.text).join(' ')
+  check('V4.5: 3 slow failing runs → cost steer only', softTexts.includes('Cadence 手段成本') && !softTexts.includes('Cadence 手段复查'), 'soft only')
+
+  // pendingInjections: markers injected once, idempotent.
+  const base = [
+    { type: 'user/message', seq: 1, data: userMsg('u', complexText) },
+    { type: 'tool/call', seq: 2, data: { name: 'read', arguments: '{}' } },
+    ...slowRuns,
+  ]
+  const inj1 = core.pendingInjections({ events: base, batchMessages: [], cls: 'complex', promoted: true, cfg: {}, nowMs: 0 })
+  const texts1 = inj1.map((i) => i.text).join(' ')
+  check('V4.5: unconverged steer injected', texts1.includes('Cadence 手段复查') && texts1.includes('重新评估该手段本身'), 'hard steer')
+  check('V4.5: cost steer NOT injected when hard fires', !texts1.includes('Cadence 手段成本'), 'no soft when hard')
+  const withCost = [...base, ...inj1.filter((i) => i.marker).map((i) => ({ type: 'user/message', seq: 999, data: { source: { kind: 'plugin' }, content: [{ type: 'text', text: i.text }] } }))]
+  const inj2 = core.pendingInjections({ events: withCost, batchMessages: [], cls: 'complex', promoted: true, cfg: {}, nowMs: 0 })
+  check('V4.5: steer idempotent', !inj2.some((i) => i.marker === 'Cadence 手段复查'), 'idempotent')
 }
 
 console.log(results.join('\n'))

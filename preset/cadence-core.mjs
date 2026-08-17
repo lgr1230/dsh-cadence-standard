@@ -193,6 +193,24 @@ export const STEER_CONVERGE =
 export const STEER_INSTRUCTION_HINT =
   '\nCadence 指令提示：工作区可能带有指令文件（AGENTS.md / CLAUDE.md），行动前按需读取它们。'
 
+/** V4.5 means-cost soft steer (detection-driven, complex tasks): the same
+ *  execution/verification MEANS (platform command + script) has been run
+ *  several times, is still failing, and has consumed noticeable wall-time.
+ *  Generic: no task-domain words, no tool-name enumeration. */
+export const STEER_MEANS_COST =
+  '\nCadence 手段成本：同一执行/验证手段已连续多次未成功且累计耗时较长。先暂停一次，评估手段本身'
+  + '——单次成本、运行方式是否受限、范围能否缩小、有无更低成本替代路径；确认手段有效再继续，'
+  + '不要只加大重复预算。'
+
+/** V4.5 unconverged-means hard backstop (detection-driven, any task): the
+ *  same MEANS has repeated many times, accumulated a large wall-time cost and
+ *  still has no success — the last run failed. Unlike the deadlock ladder
+ *  (identical command/failure fingerprints), this catches "progressing but
+ *  not converging" loops (session-19: 10 x ~10min full acceptance runs). */
+export const STEER_UNCONVERGED =
+  '\nCadence 手段复查：同一执行/验证手段已重复多次、累计耗时很长仍未成功。重新评估该手段本身'
+  + '（成本、运行方式、范围、替代路径），优先切换或缩小范围；若必须继续，先说明为何该手段不可替代再执行。'
+
 /* ── V4.1 resident catalog + compaction epoch (orchestrator-inspired) ─────── */
 
 /** Tool names the model explicitly used beyond the resident set, derived from
@@ -407,6 +425,27 @@ export function pendingInjections({ events, batchMessages, cls, promoted, cfg, n
     out.push({ marker: 'Cadence 子代理超时', text: STEER_SUBAGENT })
   }
 
+  // V4.5 means detection (session-19 calibration): soft layer (3 runs / 5
+  // min, complex) reminds to re-evaluate the means; hard backstop (5 runs /
+  // 15 min, any task) demands re-evaluation of the means itself. The hard
+  // steer supersedes the soft one (same means, stronger wording), so a hard
+  // hit suppresses the soft injection for that step.
+  const hardHit = cfg.unconvergedDetector !== false && !fired('Cadence 手段复查')
+    && meansStats(events, {
+      minRuns: cfg.unconvergedRuns ?? 5,
+      minAccMs: (cfg.unconvergedMinSec ?? 900) * 1000,
+    })
+  if (cfg.meansCostAdvisor !== false && complex && !fired('Cadence 手段成本') && !hardHit
+    && meansStats(events, {
+      minRuns: cfg.meansCostRuns ?? 3,
+      minAccMs: (cfg.meansCostMinSec ?? 300) * 1000,
+    })) {
+    out.push({ marker: 'Cadence 手段成本', text: STEER_MEANS_COST })
+  }
+  if (hardHit) {
+    out.push({ marker: 'Cadence 手段复查', text: STEER_UNCONVERGED })
+  }
+
   // Mid-task reflection (once per session; generic metacognition checkpoint).
   if (cfg.reflectionAdvisor && complex && !fired('Cadence 自省') && reflectionDue(events, cfg)) {
     out.push({ marker: 'Cadence 自省', text: STEER_REFLECTION })
@@ -517,4 +556,86 @@ export function detectDeadlock(events, cfg = {}) {
   if (stage === 2) return DL_PAUSE
   if (stage === 3) return DL_REMIND
   return cfg.escalateAfterIgnore ? DL_ESCALATE : DL_NONE
+}
+
+/* ── V4.5 means-level detection + catalog matching ──────────────────────────
+ * The deadlock ladder keys on IDENTICAL commands/failures and resets its
+ * window at every assistant/message — a session that reasons before each
+ * call (session-19) never trips it even while burning ~100 min on the same
+ * verification means with a different failure each round. meansStats keys
+ * on the MEANS (platform command + first script path), ignores interleaved
+ * writes/reasoning, and requires cumulative wall-time so quick retries
+ * (downloads, fast scripts) never fire. Calibrated on 6 recorded sessions:
+ * fires on 19 at run 5 (~50 min saved); silent on 05/06/16/17/18. ── */
+
+/** Failure-shaped result text: error words or a non-zero exit marker. */
+export function resultFailed(text) {
+  return /fail|error|timeout|超时|失败|报错|invalid|exception|timed out|exit[=: ]+[1-9]/i.test(String(text ?? ''))
+}
+
+/** Means fingerprint: platform command name + the first script path in the
+ *  command. Log redirection/arg churn is the SAME means (session-19 ran the
+ *  same acceptance script via Tee and via `>` — one means). */
+export function meansKey(e) {
+  const name = e.data?.name ?? ''
+  if (name !== 'pwsh' && name !== 'bash') return null
+  let cmd = ''
+  try { cmd = String(JSON.parse(e.data?.arguments ?? '{}')?.command ?? '') } catch { return null }
+  if (!cmd.trim()) return null
+  cmd = cmd.replace(/\\/g, '/')
+  const script = cmd.match(/(?:node|python|py|npm|npx|uv)\s+[\w./-]*?([\w.-]+\.(?:mjs|js|py|ps1|sh))\b/i)
+  return `${name}|${script ? script[1].toLowerCase() : cmd.slice(0, 40).toLowerCase()}`
+}
+
+/** Find the first unconverged means: same means ran >= minRuns times,
+ *  accumulated >= minAccMs wall-time, and its LAST result still failed.
+ *  Returns { key, runs, accMs, lastFailed } or null. Single pass, O(n). */
+export function meansStats(events, cfg = {}) {
+  const minRuns = cfg.minRuns ?? 5
+  const minAccMs = cfg.minAccMs ?? 900000
+  const evs = events ?? []
+  const byCall = new Map()
+  const runs = new Map()
+  for (const e of evs) {
+    if (e.type === 'tool/call') {
+      if (e.data?.name !== 'pwsh' && e.data?.name !== 'bash') continue
+      byCall.set(e.data?.callId, e)
+    } else if (e.type === 'tool/result') {
+      const callId = e.data?.message?.content?.[0]?.toolCallId
+      if (callId === undefined) continue
+      const call = byCall.get(callId)
+      if (call === undefined) continue
+      const key = meansKey(call)
+      if (key === null) continue
+      let text = ''
+      try {
+        text = (e.data.message.content[0].content ?? []).map((p) => p.text ?? '').join(' ')
+      } catch { /* keep '' */ }
+      // Wall-time in MILLISECONDS (matches minAccMs units).
+      const dur = Math.max(0, (e.time ?? e.time0 ?? 0) - (call.time ?? call.time0 ?? 0))
+      const r = runs.get(key) ?? { key, runs: 0, accMs: 0, lastFailed: false }
+      r.runs += 1
+      r.accMs += dur
+      r.lastFailed = resultFailed(text)
+      runs.set(key, r)
+    }
+  }
+  for (const r of runs.values()) {
+    if (r.runs >= minRuns && r.accMs >= minAccMs && r.lastFailed) return r
+  }
+  return null
+}
+
+/** Token-AND catalog matching: every whitespace-separated term must appear
+ *  as a substring of the tool name or description. Replaces the old whole-
+ *  string `includes` (a query like "vision image" was one continuous
+ *  substring and never matched — session-19 vision discoverability loss). */
+export function matchCatalog(query, catalog = []) {
+  const q = String(query ?? '').trim().toLowerCase()
+  if (!q) return []
+  const terms = q.split(/\s+/).filter(Boolean)
+  return catalog.filter((t) => {
+    const hay = `${t.name ?? ''} ${t.description ?? ''}`.toLowerCase()
+    return terms.every((term) => hay.includes(term))
+  })
 }

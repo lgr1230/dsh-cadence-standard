@@ -32,7 +32,7 @@ import {
   ANCHOR_TEXT, DL_ESCALATE,
   applyPersona, blockMedian, coreFor, countMarkers,
   detectDeadlock, effectiveClass,
-  extractText, isComplexTask, isFreshTopLevel, pendingInjections, personaFor,
+  extractText, isComplexTask, isFreshTopLevel, matchCatalog, pendingInjections, personaFor,
   postCompaction, selfKillDetect,
   selfKillVetoMessage, sessionClass,
   unlockedTools, userAskedRestart,
@@ -365,12 +365,15 @@ export function apply(ctx, config) {
 
   // ── V4.1 R1: on-demand tool discovery (read-only; the resident filter is
   // conditioning, the sandbox/approval stack is the real boundary). ─────────
+  // V4.5: token-AND matching (was whole-string `includes` — "vision image"
+  // never matched, session-19 discoverability loss) + usage guidance in the
+  // description (short keywords; the current tool list is authoritative).
   ctx.effect(() => ctx.tools.register({
     name: 'tool_search',
-    description: "Search the full tool catalog by name or description substring and list matching tools. Tools not currently visible can be called directly once discovered — the catalog keeps them unlocked for this session after their first use.",
+    description: "Search the full tool catalog by name or description substring and list matching tools. Multiple keywords: separate them with spaces — every word must appear somewhere in the tool name or description; use 1-2 short keywords. A 'no tools match' reply only means no catalog tool contains ALL of your keywords — the tool definitions listed in your current tool set are authoritative. Tools not currently visible can be called directly once discovered — the catalog keeps them unlocked for this session after their first use.",
     parameters: {
       type: 'object',
-      properties: { query: { type: 'string', description: 'substring to match against tool names and descriptions' } },
+      properties: { query: { type: 'string', description: 'keywords to match against tool names and descriptions' } },
       required: ['query'],
       additionalProperties: false,
     },
@@ -378,8 +381,7 @@ export function apply(ctx, config) {
     execute(args) {
       const session = currentSession()
       const cat = session === undefined ? [] : (catalogs.get(session.id) ?? [])
-      const q = String(args?.query ?? '').toLowerCase().trim()
-      const hits = cat.filter((t) => !q || t.name.toLowerCase().includes(q) || (t.description ?? '').toLowerCase().includes(q))
+      const hits = matchCatalog(args?.query ?? '', cat)
       if (hits.length === 0) return `no tools match "${args?.query}"`
       return hits.slice(0, 30).map((t) => `- ${t.name}: ${(t.description ?? '').slice(0, 160)}`).join('\n')
     },
@@ -401,7 +403,7 @@ export function apply(ctx, config) {
       const calls = ev.filter((e) => e.type === 'tool/call').length
       const unlocked = unlockedTools(ev, residentSet)
       return [
-        `build=v4.4`,
+        `build=v4.5`,
         `complexity=${st.complex ? 'complex' : 'simple'}`,
         `preClass=${st.preClass ? 'yes' : 'no'}`,
         `phase=${phase}`,
@@ -418,6 +420,8 @@ export function apply(ctx, config) {
         `pauses=${countMarkers(ev, '暂停指令')}`,
         `subagentSteers=${countMarkers(ev, 'Cadence 子代理超时')}`,
         `convergeSteers=${countMarkers(ev, 'Cadence 收敛')}`,
+        `costSteers=${countMarkers(ev, 'Cadence 手段成本')}`,
+        `meansSteers=${countMarkers(ev, 'Cadence 手段复查')}`,
       ].join('\n')
     },
   }))
