@@ -129,26 +129,26 @@ export function apply(ctx) {
       try {
         await verifyFresh()
       } catch (error) {
-        return `ERROR: 新代码导入失败（语法/加载错误），缓存未触碰、组合戳未更新。运行中的 generation 不受影响。\n`
-          + `原因: ${error && error.message ? error.message : String(error)}`
+        return `ERROR: new code failed to import (syntax/load error); cache untouched, stamp NOT bumped. The running generation is unaffected.\n`
+          + `cause: ${error && error.message ? error.message : String(error)}`
       }
       let purged = []
       try {
         purged = purgeReal()
       } catch (error) {
-        return `ERROR: 缓存清除失败：${error && error.message ? error.message : String(error)}`
+        return `ERROR: cache purge failed: ${error && error.message ? error.message : String(error)}`
       }
       let stamp
       try {
         stamp = bumpStamp()
       } catch (error) {
-        return `ERROR: 组合戳更新失败：${error && error.message ? error.message : String(error)}`
+        return `ERROR: stamp bump failed: ${error && error.message ? error.message : String(error)}`
       }
       return [
-        `OK: 新代码已验证可导入，缓存已清除（${purged.length} 个模块条目）。`,
-        `组合戳已更新（${stamp}）——下一个【新会话】将挂载新代码；`,
-        `已存在的会话继续使用其加入时的 generation。`,
-        `验证：新会话中执行 trace_status，build= 行应显示新标记。`,
+        `OK: new code verified importable, cache purged (${purged.length} module entries).`,
+        `Composition stamp bumped (${stamp}) — the NEXT NEW session mounts the new code.`,
+        `Existing sessions keep the generation they joined with.`,
+        `Verify: run trace_status in a new session — the build= line should show the new marker.`,
       ].join('\n')
     },
   }))

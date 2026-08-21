@@ -1,4 +1,4 @@
-# cadence-standard preset (v4.5, LEAN): pacing + safety.
+# cadence-standard preset (v4.9, LEAN): pacing + safety.
 #
 # What remains: anchor first turn (0 tools + the only cap), monotonic
 # classification with F1 inbox-insert pre-classification (the FIRST task
@@ -8,12 +8,13 @@
 # found via tool_search unlock on first use), compaction epoch (R2),
 # bootstrap context strip + one-time instruction hint (R3), process-self
 # guard on tools/pre-execute deny (R4), final-check boundary fix (F4: the
-# in-flight step counts), verification texts require the artifact's REAL
-# form (F7), per-message guides (relaxed), metacognition checkpoints
-# (reflection + final check), block-length convergence steer (p50 ≥ 2500),
-# safety trio precise (deadlock ladder L1–L4, process-self guard, subagent
-# timeout), in-preset hot code reloader (cadence_reload), trace_status +
-# tool_search (read-only).
+# in-flight step counts) + V4.6 step floor, verification texts require the
+# artifact's REAL/COMPLETE form (F7 + dynamic/时序 V4.6), per-message guides
+# (relaxed, English since V4.7), metacognition checkpoints (reflection +
+# final check), block-length convergence steer (p50 ≥ 2500), safety trio
+# precise (deadlock ladder L1–L4, process-self guard, subagent timeout —
+# SAFETY texts stay Chinese), in-preset hot code reloader (cadence_reload),
+# trace_status + tool_search (read-only).
 #
 # History (kept brief): V4.0 de-fit removed budget bands/Flash anchors/
 # trajectory/env-stuck/score-deliver/delegation/todo sync/utilization/
@@ -33,6 +34,34 @@
 # round — invisible to the identical-command/failure ladder); tool_search
 # token-AND matching (whole-string `includes` never matched "vision image" —
 # session-19 vision discoverability loss).
+# V4.6: final-check step floor (sessions 19/21 fired at step 15/12 on the
+# write-only signal, delivery at 152/147 — early-fire + collision with the
+# step-12 reflection); verification wording extended to complete form
+# (dynamic/时序 — session-21 ghosting was invisible to static screenshots);
+# broad-requirement alignment line in final check (session-21 "真实结构"
+# ambiguity); env-capability verification line (default config != only
+# config — sessions 19/20 soft-render).
+# V4.7: ALL model-facing injection texts switched to ENGLISH (persona/plan-
+# mode were already English — the Chinese injections mixed languages inside
+# the reasoning domain; session-22 trajectory: I'm density 19.4/10k vs 0.15
+# on Flash, English narration drives the chain) + first-person process
+# narration guidance (I am / I will / let me roles from the session-22
+# trajectory analysis) + intent-declaration question ⑤ in reflection.
+# SAFETY texts (deadlock ladder L1-L4, subagent timeout, process-self veto)
+# stay CHINESE — user-visible safety wording stays precise. User-message
+# regexes keep Chinese+English matching.
+# V4.8: first-request cap (session-24 planning monolith: 92k reasoning in
+# one request / 24.5 min / decision lock-in) + narration steer moved to the
+# EXECUTION phase (session-24: the V4.7 guide fired in the planning request,
+# iAm=0.06 — execution ran with zero narration conditioning) + persona
+# narration line (always-present) + decision-oriented guide wording.
+# V4.9: tool_search REMOVED (17 calls / 7 sessions / 0 real successes —
+# sessions 19/25 wasted 3/14 calls; direct-call path covers real needs);
+# content-density floor in final check + reflection (session-25 thinned to
+# 1,958 basic units vs session-24's 10,182); first-request cap 48k -> 32k
+# (session-25 settled at 36,917 — earlier cut raises guide weight and starts
+# execution sooner); narration re-cast as an OBSERVATION metric, not a
+# steering target (planning language is not execution language).
 #
 # Deployment: config values are re-read per session JOIN (no restart for
 # value changes). CODE (.mjs) is imported ONCE per process (ES module
@@ -53,32 +82,45 @@
 - id: cadence-bootstrap
   name: ./cadence-bootstrap.mjs
   config:
-    # V2.2 — one 0-tool warm-up turn before the real task.
-    anchorFirstTurn: true
-    anchorText: Cadence 热身：本轮不执行任务、不调用任何工具。请用一两句话确认你已就绪，并简述你接下来会如何处理下一条消息。不要思考、不要规划、不要使用工具。
-    # V4.0 — the ONLY remaining cap: the warm-up request.
-    anchorCapMaxTokens: 2048
-    # V4.0 — tool-call only: the warm-up reply does NOT promote.
-    promoteOn: tool-call
+    # V4.12 (2026-08-21): anchor turn REMOVED — model upgrade self-manages the
+    # first turn; the first request is the task request directly. No promotion
+    # phases either: the resident catalog is the surface from the start.
+    # V4.8 (O1) — first-request output cap: splits the planning monolith
+    # (session-24: 92k reasoning tokens in ONE request, 24.5 min, cache 0%,
+    # decision lock-in). V4.12: 32000 -> 64000 — a fuse, not a throttle; the
+    # model upgrade self-manages overthinking. Subagents are exempt (V4.10).
+    firstRequestMaxTokens: 64000
+    # V4.8 (O2-A) — execution-phase narration steer (once, complex, at the
+    # second tool call). Session-24: the V4.7 narration guide fired in the
+    # planning request and never reached execution (iAm=0.06); 22号
+    # spontaneous Pro signature 19.4.
+    narrationAdvisor: true
     # V2.4 — metacognition checkpoints, once per session each.
     reflectionAdvisor: true
     reflectionAfterSteps: 12
     finalCheckAdvisor: true
     finalCheckAfterSteps: 8
+    # V4.6 — final check step floor: stops early fire on edit-heavy sessions
+    # (write-only signal fired at step 12/15 in sessions 21/19, delivery at
+    # 147/152, colliding with the step-12 reflection). Calibrated on 8
+    # archived sessions: 05/06/17/18/20 unaffected; 16/19/21 shift to
+    # step >= 20, all still far ahead of delivery; reflection (step 12)
+    # and final check never collide.
+    finalCheckMinSteps: 20
     # V4.5 — means-level cost/unconverged detection (session-19 calibration):
     # a MEANS = platform command + first script path; interleaved writes do
     # NOT reset it (a debugging loop is not progress), and cumulative
     # wall-time is required so quick retries (downloads/fast scripts) never
-    # fire. Soft layer (3 runs / 5 min, complex) reminds to re-evaluate the
-    # means; hard backstop (5 runs / 15 min, any task) demands re-evaluation
-    # of the means itself. Calibrated on 6 sessions: 19 fires at run 5
-    # (~50 min saved); 05/06/16/17/18 silent.
+    # fire. Soft layer reminds to re-evaluate the means; hard backstop demands
+    # re-evaluation of the means itself. V4.12: thresholds RELAXED (3->5 runs
+    # / 5->10 min; 5->8 runs / 15->20 min) — the model upgrade self-detects
+    # waste earlier; the steers stay as a backstop, not a nanny.
     meansCostAdvisor: true
-    meansCostRuns: 3
-    meansCostMinSec: 300
+    meansCostRuns: 5
+    meansCostMinSec: 600
     unconvergedDetector: true
-    unconvergedRuns: 5
-    unconvergedMinSec: 900
+    unconvergedRuns: 8
+    unconvergedMinSec: 1200
     # V2 — verified deadlock ladder (SAFETY, precise): suspicion (L1) →
     # verified (L2) → pause-and-ask (L3) → reminder (L3b) → optional L4
     # (plan-mode-safe cancel WITHOUT directive).
@@ -95,25 +137,40 @@
     subagentTimeoutMin: 15
     # V4.0 — block-length convergence steer (once per session): running
     # reasoning-block median crossing blockP50Threshold gets one "converge"
-    # nudge (calibrated on 11 sessions: only the worst crosses 2500).
+    # nudge. V4.12: threshold 2500 -> 4000 (relaxed — the model upgrade
+    # self-converges; the steer only fires on truly extreme blocks).
     blockLengthSteer: true
-    blockP50Threshold: 2500
+    blockP50Threshold: 4000
     blockLengthAfterSteps: 10
+    # V4.10 (B2) — block-depth steer (once per session): running reasoning
+    # median BELOW blockP50Floor gets one "deepen" nudge (session-26:
+    # p50=771 fragmented 44 blocks vs the 2500 converge line — converge is
+    # over-long-only). Pairs with converge into a [1000, 2500) healthy band.
+    blockDepthSteer: true
+    blockP50Floor: 1000
+    blockShortnessAfterSteps: 10
     # V4.1 (R1) — resident catalog (conditioning, NOT a security boundary):
     # core work tools + vision + todo_write + SAFETY VALVES + preset tools,
     # plus whatever the model used beyond it (durable-derived). Heavier tools
-    # are found via tool_search and unlock on first use. V4.3: vision is
-    # resident (V4.1/V4.2 sessions wanted it but unlock-on-first-use is a
-    # dead loop for fresh sessions); request_tool + frequent tier REMOVED
-    # (measured: zero calls — a tool not on the surface is never used).
+    # were found via tool_search and unlocked on first use — V4.9 REMOVED
+    # tool_search (17 calls / 7 sessions / 0 real successes; direct calls
+    # off-surface work — session-20 job_output). V4.3: vision is resident
+    # (V4.1/V4.2 sessions wanted it but unlock-on-first-use is a dead loop
+    # for fresh sessions); request_tool + frequent tier REMOVED (measured:
+    # zero calls — a tool not on the surface is never used).
     # V4.4: todo_write joins resident (task-list carrier; Mona 12/14 used
     # it during planned work, V4.1–V4.3 had 0 uses with unplanned iteration).
-    residentTools: [read, write, edit, glob, grep, pwsh, bash, vision, todo_write, subagent, subagent_fork, ask_user_question, list_agents, interrupt_agent, send_message, trace_status, cadence_reload, tool_search]
-    # V4.1 (R3) — bootstrap-phase context strip (never user/policy messages).
-    suppressedContextSources: [agent-instructions, skill-catalog]
-    # V4.1 (R3) — one static instruction hint after promotion (replaces the
-    # AGENTS.md/CLAUDE.md digest row, which is REMOVED from this composition).
-    instructionHint: true
+    # V4.10 (session-29 review): goal tools + web_search + job_* +
+    # read_image/describe_image join resident — goal was REGISTERED but never
+    # on the surface (tool_search removed → structurally unreachable, goal
+    # usage 0 by construction); web_search feeds the input-driven method;
+    # job_* supports parallel verification; image tools support visual tasks.
+    residentTools: [read, write, edit, glob, grep, pwsh, bash, vision, todo_write, subagent, subagent_fork, ask_user_question, list_agents, interrupt_agent, send_message, trace_status, cadence_reload, create_goal, get_goal, update_goal, web_search, job_output, job_list, job_kill, read_image, describe_image]
+    # V4.12 (2026-08-21): context strip REMOVED — AGENTS.md digest and the
+    # skill catalog flow through from the first request (model upgrade handles
+    # them natively; the one-time instruction hint was removed with the strip).
+    # suppressedContextSources stays configurable for future needs.
+    suppressedContextSources: []
 
 # ── code reloader (V3.0, custom) ────────────────────────────────────────────
 # In-preset hot reload WITHOUT restart: `cadence_reload` verifies the .mjs
@@ -354,4 +411,4 @@
     fetch: false
     searchTimeoutMs: 45000
 
-# cadence-reload-stamp: 2026-08-17T15:11:06.382Z
+# cadence-reload-stamp: 2026-08-21T13:15:47.109Z

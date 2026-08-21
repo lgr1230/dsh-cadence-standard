@@ -81,24 +81,33 @@ export function effectiveClass(batchMessages, events) {
 
 const SIMPLE_PERSONA =
   'You are a helpful assistant.\n'
+  // V4.10 (session-28 review): the old "minimal tools needed; do not multiply
+  // steps, plans, or ceremony" wording was an EXPLICIT minimum-spend directive
+  // — session-28 (Pro) drifted to the cheapest option, 0 goal, 0 subagents
+  // (vs session-22 standard: 7 subagents + goal, "夯爆"). Neutral wording:
+  // proportionate effort, no under-investment.
   + 'Match your effort to the task. For straightforward tasks, decide quickly '
-  + 'and act directly with the minimal tools needed; do not multiply steps, '
-  + 'plans, or ceremony without evidence that the task is bigger than it looks.'
+  + 'and act directly with the tools you need; avoid ceremony, but do not '
+  + 'under-invest when the task deserves more.'
 
 const COMPLEX_PERSONA =
   'You are a helpful software engineer assistant.\n'
+  // V4.11 (2026-08-21): the "end each reasoning block with a decision"
+  // requirement was removed — it forced every block to close with a decision,
+  // suppressing open-ended exploration and divergent reasoning (user review).
   + 'Before acting, decide whether this task is simple or complex. For complex '
   + 'tasks: think deeply first — architecture, edge cases, integration points — '
-  + 'and end each reasoning block with a decision or the specific information '
-  + 'you still need. For simple tasks: act directly.'
+  + 'and let the thinking run as deep as the task needs. For simple tasks: act directly.\n'
+  // V4.8 (O2-B): persistent narration guidance — present in every request's
+  // system prompt, unlike one-shot injections (session-24: the V4.7 guide
+  // fired in the planning request and never reached the execution phase).
+  // V4.11: "verify key assumptions before acting" removed from narration
+  // (a pre-action verification gate can stall momentum).
+  + 'Narrate your process in first person during execution (state findings, '
+  + 'commit next steps).'
 
 export function personaFor(complex) {
   return complex ? COMPLEX_PERSONA : SIMPLE_PERSONA
-}
-
-/** First-request core tool surface (platform shell added by the plugin). */
-export function coreFor(complex) {
-  return complex ? ['read', 'edit', 'glob', 'grep'] : ['read', 'write', 'edit']
 }
 
 /** Replace only the persona section of an assembled section list. */
@@ -110,25 +119,71 @@ export function applyPersona(sections, text) {
 }
 
 /* ── injection texts (static constants; P2: zero interpolation) ───────────── */
+/* V4.7: model-facing injections are ENGLISH (unified with the English
+ * persona/plan-mode — the old Chinese injections mixed languages inside the
+ * reasoning domain; session-22 trajectory data shows English narration
+ * drives the Pro chain). SAFETY texts stay Chinese (deadlock ladder,
+ * subagent timeout, process-self veto — "safety wording stays precise",
+ * user-visible). User-message regexes keep Chinese+English matching. */
 
 export const GUIDE_SIMPLE =
-  '\nCadence：这是一个直接任务。先做一个明确动作；仅当工具结果显示任务比预想大时再升级到深度规划。'
+  // V4.10: "only if" was a hard conservative escalation gate — softened.
+  // V4.11: the evidence-wait removed entirely — deepen as the task demands.
+  '\nCadence: this is a direct task. Make one clear move first; deepen the plan as the task demands.'
 
-/** Shared env-stuck strategy (V2.5 wording, relaxed in V4.0: no tool-name
- *  enumeration — the point is "verify availability before concluding a
- *  capability is missing", which any tool family can follow). */
+/** Shared env-capability strategy (V2.5 wording, relaxed in V4.0: no tool-name
+ *  enumeration; V4.6: default config != only config, read-only probing). */
 export const ENV_STUCK_TEXT =
-  '关键依赖被环境限制时（命令失败/工具缺失）：先做完整的可用性验证（完整路径、常见探测命令、包管理器），'
-  + '命令失败≠能力缺失；若被卡路线可能更优且另一条路线可推进，可委派一个只读子代理并行验证环境配置'
-  + '（只查询，不得安装/修改/删除任何环境组件，如需安装回到主进程执行），主进程继续当前路线，'
-  + '返回后再评估是否切换。'
+  'When a critical dependency is constrained by the environment (command failure / missing tool): '
+  + 'first do a full availability check (full paths, common probe commands, package managers) — '
+  + 'a failed command does not mean the capability is missing; the default/common configuration is not the only configuration — '
+  + 'environment capabilities your execution path depends on (acceleration, rendering, network) must be verified in practice; '
+  + 'probing is read-only only; pick a usable path. '
+  // V4.10 (session-28 review): software rendering saturates the CPU. Minimal
+  // wording per user (2026-08-21): no rationale in the guide text.
+  + 'For anything visual (rendering/screenshots), prefer hardware acceleration; do not use software rendering. '
+  + 'If a stuck route may still be better and another route can progress, delegate a read-only subagent '
+  + 'to verify the environment in parallel (query only — do not install/modify/delete any environment component; '
+  + 'if installation is needed, return to the main process), keep the main process moving on the current route, '
+  + 'and re-evaluate after it returns.'
 
+/** V4.7 complex-task guide (input-driven comparison + delegation + env).
+ *  V4.8 (O2-C): the first-person narration sentence MOVED OUT to
+ *  STEER_NARRATION (execution-phase injection) — session-24 showed the
+ *  guide fires in the planning request where there is no process to
+ *  narrate; "think deeply" reworded decision-oriented so V4-Pro does not
+ *  extend planning into a 92k-token single block (session-24: 24.5 min
+ *  first request, 91,788 reasoning tokens, cache 0%). */
 export const GUIDE_COMPLEX =
-  '\nCadence：这是一个复杂任务。行动前深入思考——架构、边界、集成点；每段思考以决策或所需信息结尾。'
-  + '产出方法对比：你的方案是「由任务输入驱动」（数据/文档/样例/参考/现有代码被真正读入并参与产出），'
-  + '还是「闭路自造」（输入只做外围验证，产出靠推导与假设）？若存在把输入转化为产出的更优路线，'
-  + '对比其上限与成本后再决定路线。'
+  // V4.11 (2026-08-21): "Think to a decision", "end this block with a
+  // decision" and "deepen the plan later" all removed — they capped thinking
+  // depth and forced every block to close with a decision (user review).
+  '\nCadence: this is a complex task. Think before acting — '
+  + 'architecture, edge cases, integration points. '
+  + 'Compare production approaches: is your plan "input-driven" (data/docs/samples/reference/existing code '
+  + 'actually read into the output) or "closed-loop self-made" (input only peripheral, output derived from '
+  + 'assumptions)? If a better route exists that turns input into output, compare its ceiling and cost before deciding. '
+  // V4.10 (session-29 review): the old "large or input-heavy" condition
+  // framed delegation on the INPUT side — 29号 (voxel-china: big OUTPUT,
+  // no external inputs) judged itself unqualified and ran 17 serial steps
+  // alone. Modularity is the right criterion: parallelizable components.
+  + 'If the task can be modularized (parallelizable components/modules), consider delegating subagents to build '
+  + 'independent modules in parallel; the main process owns architecture, assembly and validation — give each '
+  + 'subagent a complete self-contained brief and review its output before merging. '
   + ENV_STUCK_TEXT
+
+/** V4.8 (O2-A): execution-phase narration steer — injected ONCE after
+ *  promotion, at the SECOND tool call (the first tool call promotes; the
+ *  instruction hint fires right after it — narration waits one more step so
+ *  the two injections never stack). Session-22 trajectory: I'm density
+ *  19.4/10k is the spontaneous Pro signature; the V4.7 guide never reached
+ *  execution (fired in the planning request). */
+export const STEER_NARRATION =
+  // V4.11: "verify key assumptions before acting (let me ...)" removed — a
+  // pre-action verification gate can stall momentum.
+  '\nCadence narration: now executing — narrate your process in first person as you go: '
+  + 'state what you are doing and finding (I am ...), commit the next step after each decision '
+  + '(I will ...).'
 
 /** Deadlock ladder (SAFETY — wording stays precise, never relaxed). */
 export const STEER_STALL =
@@ -154,53 +209,87 @@ export const STEER_SUBAGENT =
   + '若无进展可 interrupt_agent 中断它，自己接手剩余工作（注意其报告可能基于旧代码）。'
 
 /** Mid-task reflection — generic metacognition checkpoint, relaxed wording
- *  (V4.0). ④ requires verification to present the artifact's REAL form
- *  (measured: Mona V4.2 iterated a render→MAE loop at 300×400 while the
- *  artifact is 1200×1600 — the loop converged, the output stayed weak). */
+ *  (V4.0). ④ requires verification to present the artifact's REAL/COMPLETE
+ *  form (V4.6: dynamic/时序; session-21 ghosting was invisible to static
+ *  screenshots). ⑤ V4.7: intent declaration (session-22 "I want" role). */
 export const STEER_REFLECTION =
-  '\nCadence 自省：暂停执行片刻，回答三个问题——'
-  + '① 我正在完成的是任务真正要求的目标，还是只是「看起来正确的动作」？'
-  + '② 任务要求的输入材料（文档/数据/参考/样例）是否真正进入了我的产出？'
-  + '③ 如果现在交付，用户会认为任务完成了吗？'
-  + '④ 若产物具有视觉或空间形态，验证是否呈现了它的真实形态——还是只看了数字摘要、'
-  + '文本化或字符化表示？'
-  + '若有缺口，先补最小缺口再继续，避免推倒重来。'
+  '\nCadence reflection: pause for a moment and answer the questions — '
+  + '① Is what I am completing truly what the task asks, or just "the right-looking action"? '
+  + '② Have the required input materials (docs/data/reference/samples) actually entered my output? '
+  + '③ If I delivered right now, would the user consider the task done? '
+  + '④ If the artifact has a visual or spatial form (including dynamic processes), does my verification present '
+  + 'its COMPLETE form — beyond static frames, are motion, timing behavior and state residue also verified? '
+  + 'Or only numeric summaries, textual or character-based representations? '
+  + '⑤ What effect/quality am I actually aiming for, and does the current state meet it? '
+  // V4.9 (B): content-density reflection (session-25: 1,958 units vs 24: 10,182).
+  + '⑥ Is the artifact\'s content density proportionate to the task scale — enough basic units to carry '
+  + 'the intended detail, or was it thinned for convenience? '
+  // V4.11: the "close the smallest gap / do not restart from scratch" tail was
+  // removed — smallest-first nudges minimal patching and no-restart blocks
+  // bold rewrites (user review: "不惜重构").
+  + 'If there is a gap, close it in the order that best serves the goal.'
 
 /** Final requirement check — a delivery audit against the original task.
- *  V4.3+: full-artifact / real-form verification lines (V4.2 lesson). */
+ *  V4.3+: full-artifact / real-form verification lines (V4.2 lesson).
+ *  V4.6: broad-requirement interpretation line (session-21 "真实结构"). */
 export const STEER_FINAL_CHECK =
-  '\nCadence 验收：交付前，把任务原文的每条要求逐项对照你的产出——每条是否达成？'
-  + '有没有「做了动作但没达成目标」的条目？'
-  + '若任务存在参考输入（原图/样例/数据/已有实现），验收时对照参考核验产出，并确认参考'
-  + '真正进入了产出（被读取/解析/采样），仅下载或检索不算。'
-  + '对照核验必须作用于产物的完整形态——缩略、降采样或局部采样不能代表整体质量。'
-  + '验证手段必须呈现产物的真实形态；任何数字、文本或字符摘要都不能替代。'
-  + '自评或外部评分不等于交付依据——评价者的标准是否等于任务预期？差距大时应继续迭代'
-  + '或向用户确认预期，而不是仅凭一个评分就交付。'
-  + '未达成项先补齐，或向用户说明差距。'
+  '\nCadence final check: before delivery, go through every requirement in the original task against '
+  + 'your output — is each met? Are there items where you "did the action" but did not achieve the goal? '
+  + 'If the task has reference inputs (source image/sample/data/existing implementation), verify your output '
+  + 'against the reference and confirm the reference actually entered the output (read/parsed/sampled — '
+  + 'downloading or searching alone does not count). '
+  + 'The comparison must act on the artifact\'s complete form — thumbnails, downsampling or partial sampling '
+  + 'do not represent overall quality. Verification must present the artifact\'s real form; no numeric, '
+  + 'textual or character summary can substitute. '
+  + 'Self-ratings or external scores are not delivery evidence — does the evaluator\'s standard equal the task '
+  + 'expectation? If the gap is large, keep iterating or confirm expectations with the user instead of '
+  + 'delivering on a single score. '
+  + 'For broad requirements in the original wording (like "real", "complete", "comprehensive"), state your '
+  + 'interpretation and any simplifications at delivery; if your interpretation diverges materially from the '
+  + 'task, confirm scope with the user first. '
+  // V4.9 (B): content-density floor — session-25 thinned the palace to 1,958
+  // basic units vs session-24's 10,182 ("1000 voxels is lazy"; optimization
+  // became a license to cut content). Generic: basic units, proportionate.
+  + 'Check content density against task scale: the number of basic units (blocks/cells/elements) your '
+  + 'artifact is built from should match the task\'s ambition — do not shrink the basic-unit count for '
+  + 'convenience; optimization is not a license to reduce content. '
+  + 'Close unmet items first, or explain the gap to the user.'
 
 /** V4.0 convergence steer: long reasoning blocks get one nudge to converge
  *  (routing-suite P10: deep thinking without a commit binding starves the
- *  budget). Generic: no task words. */
+ *  budget). V4.11: the per-block decision requirement and the
+ *  "instead of expanding the thinking" tail removed — the steer only says
+ *  to act when information is sufficient. Generic: no task words. */
 export const STEER_CONVERGE =
-  '\nCadence 收敛：最近的推理块明显偏长。先收敛再继续——每段思考以决策或所需信息结尾；'
-  + '信息足够就产出或执行下一步动作，不要继续扩大思考。'
+  '\nCadence converge: recent reasoning blocks are notably long. Converge before continuing — '
+  + 'when information is sufficient, produce or execute the next action.'
+
+/** V4.10 (B2) block-depth steer: the mirror image of converge. Session-26
+ *  (V4-Flash, 55 steps): p50=771 vs the 2500 converge line — the converge
+ *  steer only fires on OVER-long medians, so a fragmented session (one
+ *  shallow observation per step) never gets a nudge. Once per session, fires
+ *  when the running median falls BELOW the floor. Static, zero interpolation;
+ *  model-facing English. */
+export const STEER_DEEPEN =
+  '\nCadence deepen: recent reasoning blocks are notably short and fragmented. '
+  + 'Think deeper before continuing — each block should carry the whole chain '
+  + '(current finding → the decision it implies → the specific next step) instead of '
+  + 'one shallow observation; when information is sufficient, take one decisive action '
+  + 'rather than several shallow ones.'
 
 /** V4.1 instruction hint (R3, orchestrator pattern): instead of injecting the
  *  full AGENTS.md/CLAUDE.md digest (a large block that perturbs the
  *  trajectory), one short hint is injected ONCE after promotion — the model
  *  reads the instruction files itself when relevant. Static text. */
-export const STEER_INSTRUCTION_HINT =
-  '\nCadence 指令提示：工作区可能带有指令文件（AGENTS.md / CLAUDE.md），行动前按需读取它们。'
-
 /** V4.5 means-cost soft steer (detection-driven, complex tasks): the same
  *  execution/verification MEANS (platform command + script) has been run
  *  several times, is still failing, and has consumed noticeable wall-time.
  *  Generic: no task-domain words, no tool-name enumeration. */
 export const STEER_MEANS_COST =
-  '\nCadence 手段成本：同一执行/验证手段已连续多次未成功且累计耗时较长。先暂停一次，评估手段本身'
-  + '——单次成本、运行方式是否受限、范围能否缩小、有无更低成本替代路径；确认手段有效再继续，'
-  + '不要只加大重复预算。'
+  '\nCadence means cost: the same execution/verification means has run multiple times without success '
+  + 'and consumed noticeable wall-time. Pause once and evaluate the means itself — per-run cost, whether '
+  + 'its run mode is constrained, whether the scope can shrink, and whether a cheaper alternative path '
+  + 'exists; only continue after confirming the means is effective.'
 
 /** V4.5 unconverged-means hard backstop (detection-driven, any task): the
  *  same MEANS has repeated many times, accumulated a large wall-time cost and
@@ -208,8 +297,12 @@ export const STEER_MEANS_COST =
  *  (identical command/failure fingerprints), this catches "progressing but
  *  not converging" loops (session-19: 10 x ~10min full acceptance runs). */
 export const STEER_UNCONVERGED =
-  '\nCadence 手段复查：同一执行/验证手段已重复多次、累计耗时很长仍未成功。重新评估该手段本身'
-  + '（成本、运行方式、范围、替代路径），优先切换或缩小范围；若必须继续，先说明为何该手段不可替代再执行。'
+  // V4.11: "shrinking scope" removed from the preferred options — shrinking
+  // is a retreat, not a first choice (user review).
+  '\nCadence means review: the same execution/verification means has repeated many times, accumulated '
+  + 'a large wall-time cost, and still has no success. Re-evaluate the means itself (cost, run mode, scope, '
+  + 'alternative paths); prefer switching the approach; if you must continue, first state why the '
+  + 'means is irreplaceable.'
 
 /* ── V4.1 resident catalog + compaction epoch (orchestrator-inspired) ─────── */
 
@@ -263,7 +356,13 @@ export function reflectionDue(events, cfg) {
  *  RECENT write, no user intervention. Runs at pre-step time, which does not
  *  see the CURRENT step (its step/start lands after) — count it in, or a
  *  session ending exactly `finalCheckAfterSteps` steps after its last write
- *  never fires (measured: Mona V4.2 V4F). */
+ *  never fires (measured: Mona V4.2 V4F).
+ *  V4.6: a global step floor (`finalCheckMinSteps`, default 20) stops the
+ *  check from firing during early build-out of edit-heavy sessions — the
+ *  write-only signal fired at step 12/15 in sessions 21/19 (delivery at
+ *  147/152) and collided with the reflection checkpoint (step 12).
+ *  Calibrated on 8 archived sessions: 05/06/17/18/20 unaffected, 16/19/21
+ *  shift to step >= 20, all still far ahead of delivery. */
 export function finalCheckDue(events, cfg) {
   const writes = (events ?? []).filter(
     (e) => e.type === 'tool/call' && e.data?.name === 'write',
@@ -274,15 +373,12 @@ export function finalCheckDue(events, cfg) {
     (e) => e.type === 'step/start' && e.seq > lastWriteSeq,
   ).length
   if (stepsAfter + 1 < (cfg?.finalCheckAfterSteps ?? 8)) return false
+  const totalSteps = (events ?? []).filter((e) => e.type === 'step/start').length
+  if (totalSteps + 1 < (cfg?.finalCheckMinSteps ?? 20)) return false
   return !userIntervened(events)
 }
 
 /** Only top-level fresh sessions (no prior user message) get the anchor turn. */
-export function isFreshTopLevel(agent) {
-  if ((agent?.session?.header?.delegationDepth ?? 0) > 0) return false
-  return !(agent?.session?.events ?? []).some((event) => event.type === 'user/message')
-}
-
 /* ── deadlock ladder (V2 verified ladder; SAFETY) ─────────────────────────── */
 
 export const DL_NONE = 0
@@ -291,9 +387,6 @@ export const DL_VERIFIED = 2
 export const DL_PAUSE = 3
 export const DL_REMIND = 4
 export const DL_ESCALATE = 5
-
-export const ANCHOR_TEXT =
-  'Cadence 热身：本轮不执行任务、不调用任何工具。请用一两句话确认你已就绪，并简述你接下来会如何处理下一条消息。不要思考、不要规划、不要使用工具。'
 
 /** True when a REAL user message actually ASKS for a restart/kill — mere
  *  mention of the words must NOT count. Safety: precise. */
@@ -377,7 +470,30 @@ export function blockLengthSteerDue(events, cfg = {}) {
   if (blens.length < 3) return false
   blens.sort((a, b) => a - b)
   const p50 = blens[Math.floor(blens.length / 2)]
-  return p50 >= (cfg.blockP50Threshold ?? 2500)
+  return p50 >= (cfg.blockP50Threshold ?? 4000)
+}
+
+/** True when the RUNNING median reasoning-block length fell BELOW the floor
+ *  (V4.10/B2: session-26 p50=771 vs the 2500 converge line — converge is
+ *  over-long-only, so fragmented sessions never fire; p75=2620 shows flash
+ *  CAN write long blocks, so a sub-1000 median means shallow steps, not a
+ *  capability limit). Pairs with blockLengthSteerDue into a
+ *  [blockP50Floor, blockP50Threshold) healthy band. */
+export function blockShortnessSteerDue(events, cfg = {}) {
+  const steps = (events ?? []).filter((e) => e.type === 'step/start').length
+  if (steps < (cfg.blockShortnessAfterSteps ?? 10)) return false
+  if (userIntervened(events)) return false
+  const blens = []
+  for (const e of events ?? []) {
+    if (e.type !== 'assistant/message') continue
+    for (const b of (e.data?.message?.content ?? []).filter((x) => x.type === 'reasoning')) {
+      blens.push((b.text ?? '').length)
+    }
+  }
+  if (blens.length < 3) return false
+  blens.sort((a, b) => a - b)
+  const p50 = blens[Math.floor(blens.length / 2)]
+  return p50 < (cfg.blockP50Floor ?? 1000)
 }
 
 /* ── injection assembly (idempotent, derived) ─────────────────────────────── */
@@ -394,11 +510,12 @@ export function pendingInjections({ events, batchMessages, cls, promoted, cfg, n
   const complex = cls === 'complex'
   const out = []
 
-  // V4.1 instruction hint (R3): once, AFTER promotion — replaces the full
-  // AGENTS.md/CLAUDE.md digest (see agent.cordis.yml: no agent-instructions
-  // row). Static, idempotent.
-  if (cfg.instructionHint && promoted && !fired('Cadence 指令提示')) {
-    out.push({ marker: 'Cadence 指令提示', text: STEER_INSTRUCTION_HINT })
+  // V4.8 (O2-A): execution-phase narration — once, complex tasks, at the
+  // SECOND tool call (V4.12: no promotion phases, so "tool calls >= 2" is
+  // the whole trigger).
+  if (cfg.narrationAdvisor !== false && complex && !fired('Cadence narration')
+    && (events ?? []).filter((e) => e.type === 'tool/call').length >= 2) {
+    out.push({ marker: 'Cadence narration', text: STEER_NARRATION })
   }
 
   // Per-message guides: only for real user messages not yet entered.
@@ -429,36 +546,43 @@ export function pendingInjections({ events, batchMessages, cls, promoted, cfg, n
   // min, complex) reminds to re-evaluate the means; hard backstop (5 runs /
   // 15 min, any task) demands re-evaluation of the means itself. The hard
   // steer supersedes the soft one (same means, stronger wording), so a hard
-  // hit suppresses the soft injection for that step.
-  const hardHit = cfg.unconvergedDetector !== false && !fired('Cadence 手段复查')
+  // hit suppresses the soft injection for that step. V4.7: English markers.
+  const hardHit = cfg.unconvergedDetector !== false && !fired('Cadence means review')
     && meansStats(events, {
-      minRuns: cfg.unconvergedRuns ?? 5,
-      minAccMs: (cfg.unconvergedMinSec ?? 900) * 1000,
+      minRuns: cfg.unconvergedRuns ?? 8,
+      minAccMs: (cfg.unconvergedMinSec ?? 1200) * 1000,
     })
-  if (cfg.meansCostAdvisor !== false && complex && !fired('Cadence 手段成本') && !hardHit
+  if (cfg.meansCostAdvisor !== false && complex && !fired('Cadence means cost') && !hardHit
     && meansStats(events, {
-      minRuns: cfg.meansCostRuns ?? 3,
-      minAccMs: (cfg.meansCostMinSec ?? 300) * 1000,
+      minRuns: cfg.meansCostRuns ?? 5,
+      minAccMs: (cfg.meansCostMinSec ?? 600) * 1000,
     })) {
-    out.push({ marker: 'Cadence 手段成本', text: STEER_MEANS_COST })
+    out.push({ marker: 'Cadence means cost', text: STEER_MEANS_COST })
   }
   if (hardHit) {
-    out.push({ marker: 'Cadence 手段复查', text: STEER_UNCONVERGED })
+    out.push({ marker: 'Cadence means review', text: STEER_UNCONVERGED })
   }
 
   // Mid-task reflection (once per session; generic metacognition checkpoint).
-  if (cfg.reflectionAdvisor && complex && !fired('Cadence 自省') && reflectionDue(events, cfg)) {
-    out.push({ marker: 'Cadence 自省', text: STEER_REFLECTION })
+  if (cfg.reflectionAdvisor && complex && !fired('Cadence reflection') && reflectionDue(events, cfg)) {
+    out.push({ marker: 'Cadence reflection', text: STEER_REFLECTION })
   }
 
   // Final requirement check (once per session; generic delivery audit).
-  if (cfg.finalCheckAdvisor && complex && !fired('Cadence 验收') && finalCheckDue(events, cfg)) {
-    out.push({ marker: 'Cadence 验收', text: STEER_FINAL_CHECK })
+  if (cfg.finalCheckAdvisor && complex && !fired('Cadence final check') && finalCheckDue(events, cfg)) {
+    out.push({ marker: 'Cadence final check', text: STEER_FINAL_CHECK })
   }
 
   // Block-length convergence steer (once per session; V4.0).
-  if (cfg.blockLengthSteer && complex && !fired('Cadence 收敛') && blockLengthSteerDue(events, cfg)) {
-    out.push({ marker: 'Cadence 收敛', text: STEER_CONVERGE })
+  if (cfg.blockLengthSteer && complex && !fired('Cadence converge') && blockLengthSteerDue(events, cfg)) {
+    out.push({ marker: 'Cadence converge', text: STEER_CONVERGE })
+  }
+
+  // V4.10 (B2) block-depth steer (once per session): the running median fell
+  // BELOW the floor — fragmented shallow steps (session-26 p50=771). Pairs
+  // with converge into a [floor, threshold) healthy band.
+  if (cfg.blockDepthSteer && complex && !fired('Cadence deepen') && blockShortnessSteerDue(events, cfg)) {
+    out.push({ marker: 'Cadence deepen', text: STEER_DEEPEN })
   }
 
   return out
@@ -624,18 +748,4 @@ export function meansStats(events, cfg = {}) {
     if (r.runs >= minRuns && r.accMs >= minAccMs && r.lastFailed) return r
   }
   return null
-}
-
-/** Token-AND catalog matching: every whitespace-separated term must appear
- *  as a substring of the tool name or description. Replaces the old whole-
- *  string `includes` (a query like "vision image" was one continuous
- *  substring and never matched — session-19 vision discoverability loss). */
-export function matchCatalog(query, catalog = []) {
-  const q = String(query ?? '').trim().toLowerCase()
-  if (!q) return []
-  const terms = q.split(/\s+/).filter(Boolean)
-  return catalog.filter((t) => {
-    const hay = `${t.name ?? ''} ${t.description ?? ''}`.toLowerCase()
-    return terms.every((term) => hay.includes(term))
-  })
 }
