@@ -135,14 +135,18 @@ export function apply(ctx, config) {
     // (session-24: 92k reasoning tokens in ONE request, 24.5 min, cache 0%).
     // V4.12: 32000 -> 64000 — the model upgrade self-manages overthinking;
     // the cap stays as a fuse, not a throttle. Subagents are exempt (V4.10).
+    // V4.13b (session-31 review): 64000 -> 24000 -> 32000 — 24k truncated
+    // every "write-the-code-in-reasoning" request (3/3 turns cut); 32k is
+    // the V4.8-calibrated value under which sessions 26/29 never truncated.
     firstRequestMaxTokens: Number.isSafeInteger(config.firstRequestMaxTokens) && config.firstRequestMaxTokens > 0
-      ? config.firstRequestMaxTokens : 64000,
+      ? config.firstRequestMaxTokens : 32000,
     // V4.8 (O2-A): execution-phase narration steer (once, complex).
     narrationAdvisor: config.narrationAdvisor !== false,
-    // V4.13 (2026-08-22, session-30 review): truncation auto-recovery —
-    // once per session, a max-tokens turn/end with ZERO tool calls gets a
-    // next-turn recovery message instead of waiting for the user's "继续".
-    // Goal sessions are excluded (the goal driver owns continuation there).
+    // V4.13 (2026-08-22, session-30/31 review): truncation auto-recovery —
+    // up to 2× per session, a max-tokens turn/end whose TRUNCATED STEP had
+    // no tool calls gets a next-turn recovery message instead of waiting for
+    // the user's "继续". Goal sessions are NOT excluded (the goal driver
+    // disarms on max-tokens — no reservation to collide with).
     autoRecover: config.autoRecover !== false,
   }
   const residentSet = new Set(cfg.residentTools)
@@ -160,7 +164,7 @@ export function apply(ctx, config) {
    *  after that seq (the user confirmed) —or the user's own message already
    *  asked for the restart/kill. */
   const killVetoed = new Map()
-  /** Session id -> true once the truncation auto-recovery fired (once/session). */
+  /** Session id -> count of truncation auto-recoveries fired (max 2/session). */
   const recovered = new Map()
 
   const stateOf = (session) => {
@@ -339,24 +343,37 @@ export function apply(ctx, config) {
     return { kind: 'deny', reason: selfKillVetoMessage(process.pid) }
   })
 
-  // ── V4.13 (2026-08-22, session-30 review): truncation auto-recovery ──────
-  // A max-tokens turn/end that produced ZERO tool calls was a pure-thinking
-  // blowout (session-30: 64k reasoning tokens, 568s, nothing executed; the
-  // user had to send "继续"). Once per session, prepend a recovery message
-  // into the next-turn inbox so the work continues without user
-  // intervention. Goal sessions are excluded — the goal-round driver owns
-  // continuation there, and a spliced ordinary message would collide with
-  // its reservation as competingQueued. Every failure degrades to the
-  // harness's manual one-click recovery footer: never blocks, never twice.
+  // ── V4.13 (2026-08-22, session-30/31 review): truncation auto-recovery ────
+  // A max-tokens turn/end whose TRUNCATED STEP produced no tool calls is a
+  // pure-thinking blowout (session-30: 64k in one block; session-31: 24k in
+  // every pre-write request, 3/3 turns cut). Recovery fires up to 2× per
+  // session (the burn-every-request pattern outlasts a single recovery).
+  // The guard is step-level (the turn's LAST step/start onward), not
+  // turn-level — session-31's turn1 ran env-probe + create_goal tools in
+  // step1 but the cut happened in a zero-tool step2, and the turn-level
+  // guard skipped it. Goal sessions are NOT excluded: the goal driver
+  // disarms on max-tokens (no reservation to collide with), and with G1
+  // guiding goal creation, goal sessions would otherwise never recover.
+  // Every failure degrades to the manual one-click recovery footer.
   ctx.on('session/event', (session, event) => {
     if (!cfg.autoRecover) return
     if (event?.type !== 'turn/end' || event.data?.reason?.kind !== 'max-tokens') return
     const id = session?.id
-    if (id === undefined || recovered.has(id)) return
+    if (id === undefined) return
+    const count = recovered.get(id) ?? 0
+    if (count >= 2) return
     const ev = Array.isArray(session?.events) ? session.events : []
     const turn = event.data?.turn
-    if (ev.some((e) => e.type === 'tool/call' && e.data?.turn === turn)) return
-    if (ev.some((e) => e.type === 'user/message' && e.data?.source?.kind === 'goal')) return
+    // The truncated step = the turn's last step/start boundary onward.
+    let lastStepSeq = -Infinity
+    for (const e of ev) {
+      if (e.type === 'step/start' && e.data?.turn === turn && typeof e.seq === 'number') {
+        if (e.seq > lastStepSeq) lastStepSeq = e.seq
+      }
+    }
+    if (lastStepSeq === -Infinity) return // no step boundary: abnormal, do not inject
+    if (ev.some((e) => e.type === 'tool/call' && e.data?.turn === turn
+      && typeof e.seq === 'number' && e.seq > lastStepSeq)) return
     const agent = recentAgents.get(id) ?? agents.get(id)
     if (agent === undefined) return
     try {
@@ -366,7 +383,7 @@ export function apply(ctx, config) {
         source: { kind: 'plugin', plugin: 'cadence-bootstrap' },
         content: [{ type: 'text', text: STEER_RECOVER }],
       })
-      recovered.set(id, true)
+      recovered.set(id, count + 1)
     } catch { /* degrade to the manual recovery footer */ }
   })
 
