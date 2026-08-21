@@ -4,7 +4,7 @@
 
 An experimental [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)
 agent preset that paces the model's thinking budget across a session —
-**Cadence Standard v4.12** (thinking-budget pacing).
+**Cadence Standard v4.14** (thinking-budget pacing).
 
 This is a community project. It is not an official DeepSeek preset and is not
 affiliated with or endorsed by DeepSeek.
