@@ -751,7 +751,7 @@ const simpleText = '写个 hello 脚本'
   check('V4.13: simple persona has no interleave sentence', !sp.includes('Interleave thinking'), 'simple clean')
   check('V4.13: complex persona guides goal creation (G1)',
     cp.includes('create a goal first') && cp.includes('scale expectation') && cp.includes('drives rounds automatically'), 'G1 text')
-  check('V4.13b: code goes to tools, not into reasoning (session-31)',
+  check('V4.13b: code goes to tools, not into reasoning (session-dcc6d859)',
     cp.includes('do not draft the full code inside reasoning') && cp.includes('write/edit tools'), 'F3 text')
   check('V4.13b: simple persona has no code-draft sentence', !sp.includes('draft the full code'), 'simple clean')
   check('V4.13: recover steer is static and generic',
@@ -798,9 +798,9 @@ const simpleText = '写个 hello 脚本'
   await hh.h('system-prompt/assemble')[0](null, { agent }, async () => ({ sections: [], tools: [] }))
   const prepended = []
   agent.inbox.prepend = (_t, m) => prepended.push(m)
-  // session-31 shape: tools in step1, truncation in zero-tool step2 → recover.
+  // session-dcc6d859 shape: tools in step1, truncation in zero-tool step2 → recover.
   hh.h('session/event').forEach((l) => l(s, { type: 'turn/end', data: { turn: 1, reason: { kind: 'max-tokens' } } }))
-  check('2A: tools before the truncated step do not block recovery (session-31)', prepended.length === 1, `n=${prepended.length}`)
+  check('2A: tools before the truncated step do not block recovery (session-dcc6d859)', prepended.length === 1, `n=${prepended.length}`)
 }
 {
   const hh = makeHarness()

@@ -89,7 +89,7 @@
     # (session-24: 92k reasoning tokens in ONE request, 24.5 min, cache 0%,
     # decision lock-in). V4.12: 32000 -> 64000 — a fuse, not a throttle; the
     # model upgrade self-manages overthinking. V4.13: 64000 -> 24000 (session-30
-    # truncation). V4.13b (session-31 review): 24000 -> 32000 — 24k truncated
+    # truncation). V4.13b (session-dcc6d859 review): 24000 -> 32000 — 24k truncated
     # every "write-the-code-in-reasoning" request (3/3 turns cut, zero tools);
     # 32k is the V4.8-calibrated value under which sessions 26/29 never
     # truncated; auto-recovery (2×/session) is the backstop. Subagents exempt.

@@ -135,7 +135,7 @@ export function apply(ctx, config) {
     // (session-24: 92k reasoning tokens in ONE request, 24.5 min, cache 0%).
     // V4.12: 32000 -> 64000 — the model upgrade self-manages overthinking;
     // the cap stays as a fuse, not a throttle. Subagents are exempt (V4.10).
-    // V4.13b (session-31 review): 64000 -> 24000 -> 32000 — 24k truncated
+    // V4.13b (session-dcc6d859 review): 64000 -> 24000 -> 32000 — 24k truncated
     // every "write-the-code-in-reasoning" request (3/3 turns cut); 32k is
     // the V4.8-calibrated value under which sessions 26/29 never truncated.
     firstRequestMaxTokens: Number.isSafeInteger(config.firstRequestMaxTokens) && config.firstRequestMaxTokens > 0
@@ -345,11 +345,11 @@ export function apply(ctx, config) {
 
   // ── V4.13 (2026-08-22, session-30/31 review): truncation auto-recovery ────
   // A max-tokens turn/end whose TRUNCATED STEP produced no tool calls is a
-  // pure-thinking blowout (session-30: 64k in one block; session-31: 24k in
+  // pure-thinking blowout (session-30: 64k in one block; session-dcc6d859: 24k in
   // every pre-write request, 3/3 turns cut). Recovery fires up to 2× per
   // session (the burn-every-request pattern outlasts a single recovery).
   // The guard is step-level (the turn's LAST step/start onward), not
-  // turn-level — session-31's turn1 ran env-probe + create_goal tools in
+  // turn-level — session-dcc6d859's turn1 ran env-probe + create_goal tools in
   // step1 but the cut happened in a zero-tool step2, and the turn-level
   // guard skipped it. Goal sessions are NOT excluded: the goal driver
   // disarms on max-tokens (no reservation to collide with), and with G1

@@ -113,8 +113,8 @@ const COMPLEX_PERSONA =
   // head blowouts, not first-step hesitation.
   + 'Interleave thinking with tool calls: do not finish the whole plan in your head '
   + 'before the first action — take the first minimal step, then deepen.\n'
-  // V4.13b (2026-08-22, session-31 review): the model's actual blowout mode
-  // is drafting COMPLETE CODE inside reasoning (session-31: every pre-write
+  // V4.13b (2026-08-22, session-dcc6d859 review): the model's actual blowout mode
+  // is drafting COMPLETE CODE inside reasoning (session-dcc6d859: every pre-write
   // request burned 24k reasoning tokens writing files mentally, 3/3 turns
   // cut). Explicit: code is written by tools, not drafted in reasoning.
   + 'Write code with the write/edit tools; do not draft the full code inside reasoning.\n'
