@@ -69,7 +69,7 @@ const simpleText = '写个 hello 脚本'
   const sp = core.personaFor(false)
   const cp = core.personaFor(true)
   check('persona: simple is minimal', sp.includes('Match your effort'), 'simple')
-  check('persona: complex has decision-ending', cp.includes('end each reasoning block with a decision'), 'complex')
+  check('persona: complex has deep-think guidance', cp.includes('think deeply first'), 'complex')
   check('persona: no flash anchors', !cp.includes('review what you have already done'), 'no anchors')
   check('persona: no file-discipline sentence', !cp.includes('read it first'), 'no discipline')
   check('persona: no env enumeration', !cp.includes('py -0p'), 'no env words')
@@ -77,71 +77,81 @@ const simpleText = '写个 hello 脚本'
 
 // ── 3. guides: full every message, relaxed wording ──────────────────────────
 {
-  check('guide: simple text', core.GUIDE_SIMPLE.includes('直接任务'), 'simple guide')
-  check('guide: complex carries input-driven comparison', core.GUIDE_COMPLEX.includes('输入驱动') && core.GUIDE_COMPLEX.includes('闭路自造'), 'method text')
-  check('guide: complex carries relaxed env-stuck', core.GUIDE_COMPLEX.includes('命令失败≠能力缺失'), 'env-stuck text')
+  check('guide: simple text', core.GUIDE_SIMPLE.includes('direct task'), 'simple guide')
+  check('guide: complex carries input-driven comparison', core.GUIDE_COMPLEX.includes('input-driven') && core.GUIDE_COMPLEX.includes('closed-loop self-made'), 'method text')
+  check('guide: complex carries delegation line (session-22 parallel spec extraction)', core.GUIDE_COMPLEX.includes('delegating subagents') && core.GUIDE_COMPLEX.includes('main process owns architecture'), 'delegation text')
+  check('V4.10: delegation criterion is modularity, not input-heaviness (session-29 review)',
+    core.GUIDE_COMPLEX.includes('can be modularized') && !core.GUIDE_COMPLEX.includes('large or input-heavy'), 'modular delegation')
+  check('guide: complex carries relaxed env-stuck', core.GUIDE_COMPLEX.includes('a failed command does not mean'), 'env-stuck text')
+  check('V4.8: guide is decision-oriented (no deep-think monolith)', core.GUIDE_COMPLEX.includes('Think before acting')
+    && !core.GUIDE_COMPLEX.includes('Think enough') && !core.GUIDE_COMPLEX.includes('first-person process narration'), 'decision wording')
+  check('V4.11: no per-block decision requirement (user review)',
+    !core.GUIDE_COMPLEX.includes('end this block with a decision') && !core.personaFor(true).includes('end each reasoning block with a decision'), 'no decision-ending')
+  check('V4.10: no minimum-spend directive in simple persona (session-28 review)',
+    !core.personaFor(false).includes('do not multiply') && !core.personaFor(false).includes('minimal tools'), 'no min-spend')
+  check('V4.10: no hard escalation gate in simple guide (session-28 review)',
+    !core.GUIDE_SIMPLE.includes('only if'), 'no only-if')
+  check('V4.10: env-stuck carries minimal rendering guidance (session-28 CPU spike)',
+    core.ENV_STUCK_TEXT.includes('prefer hardware acceleration') && core.ENV_STUCK_TEXT.includes('do not use software rendering')
+    && !core.ENV_STUCK_TEXT.includes('SwiftShader') && !core.ENV_STUCK_TEXT.includes('saturate the CPU'), 'render minimal')
+  check('V4.8: narration moved to STEER_NARRATION (execution phase)', core.STEER_NARRATION.includes('Cadence narration')
+    && core.STEER_NARRATION.includes('I am') && core.STEER_NARRATION.includes('I will')
+    && !core.STEER_NARRATION.includes('let me'), 'narration steer')
+  check('V4.8: persona carries narration line (always-present, complex only)', core.personaFor(true).includes('Narrate your process in first person during execution')
+    && !core.personaFor(false).includes('Narrate'), 'persona narration')
   check('guide: relaxed — no tool-name enumeration', !core.GUIDE_COMPLEX.includes('py -0p') && !core.GUIDE_COMPLEX.includes('uv-conda'), 'relaxed')
   check('guide: lite removed', core.GUIDE_COMPLEX_LITE === undefined, 'no lite')
   const hh = makeHarness()
   const s = { id: 's3', events: [{ type: 'user/message', seq: 1, data: userMsg('u1', complexText) }] }
   hh.agentOf(s)
   const d1 = await hh.h('agent/pre-step')[0]({}, async () => ({ kind: 'enter', messages: [userMsg('u2', complexText)] }))
-  const fulls = d1.messages.filter((m) => m.content?.[0]?.text?.includes('这是一个复杂任务')).length
+  const fulls = d1.messages.filter((m) => m.content?.[0]?.text?.includes('this is a complex task')).length
   check('guide: every complex message gets the FULL guide', fulls === 1, `full guides=${fulls}`)
 }
 
-// ── 4. anchor + warm-up + narrow first-task surface + promotion ─────────────
+// ── 4. V4.12: no anchor, no promotion — resident surface + cap fuse ────────
 {
   const hh = makeHarness()
   const s = { id: 's4', events: [], header: { delegationDepth: 0 } }
   const agent = hh.agentOf(s)
+
+  // No anchor turn: nothing prepended, first request is the task request.
   agent.inbox.prepend = (_t, m) => hh.prepended.push(m)
   hh.prepended = []
-  const inserted = hh.h('agent/inbox/inserted')[0]
-  inserted({ agent, message: userMsg('r1', complexText) })
-  check('anchor: prepend fired once for first real message', hh.prepended.length === 1
-    && hh.prepended[0].source?.kind === 'plugin', `${hh.prepended.length} prepended`)
-  inserted({ agent, message: userMsg('r2', '第二条消息') })
-  check('anchor: no duplicate on second insert', hh.prepended.length === 1, `${hh.prepended.length}`)
-  inserted({ agent, message: { source: { kind: 'plugin' } } })
-  check('anchor: plugin messages never trigger', hh.prepended.length === 1, 'plugin ignored')
+  hh.h('agent/inbox/inserted')[0]({ agent, message: userMsg('r1', complexText) })
+  check('V4.12: no anchor turn prepended', hh.prepended.length === 0, `${hh.prepended.length} prepended`)
 
-  // Warm-up assembly: 0 tools.
+  // First request = resident surface + first-request cap (64k fuse).
   const a1 = await hh.h('system-prompt/assemble')[0](null, { agent }, async () => ({
-    sections: [{ name: 'persona', text: 'x' }], tools: [{ name: 'read' }, { name: 'edit' }, { name: 'pwsh' }], contexts: [],
+    sections: [{ name: 'persona', text: 'x' }], tools: [
+      { name: 'read' }, { name: 'edit' }, { name: 'glob' }, { name: 'grep' }, { name: 'pwsh' },
+      { name: 'write' }, { name: 'vision' }, { name: 'web_search' }, { name: 'subagent' }, { name: 'create_goal' },
+    ], contexts: [],
   }))
-  check('warm-up: zero tools', a1.tools.length === 0, `tools=${a1.tools.length}`)
-  check('warm-up: simple persona', a1.sections.find((x) => x.name === 'cadence-persona').text.includes('Match your effort'), 'simple persona')
-
-  // Warm-up request: anchor cap 2048.
+  const taskTools = a1.tools.map((t) => t.name).sort()
+  check('V4.12: first request = resident surface (delegation/goal visible from the start)',
+    JSON.stringify(taskTools) === JSON.stringify(['create_goal', 'edit', 'glob', 'grep', 'pwsh', 'read', 'subagent', 'vision', 'web_search', 'write'].sort()),
+    `got ${taskTools.join(',')}`)
+  check('task request: complex persona', a1.sections.find((x) => x.name === 'cadence-persona').text.includes('think deeply first'), 'complex persona')
   const r1 = await hh.h('agent/request')[0]({ agent }, async () => ({ provider: 'p', model: 'm', maxTokens: 256000 }))
-  check('warm-up: request capped at 2048', r1.maxTokens === 2048, `got ${r1.maxTokens}`)
+  check('V4.12: first request capped at 64000 (fuse, not throttle)', r1.maxTokens === 64000, `got ${r1.maxTokens}`)
+  const r2 = await hh.h('agent/request')[0]({ agent }, async () => ({ provider: 'p', model: 'm', maxTokens: 256000 }))
+  check('V4.12: later requests uncapped', r2.maxTokens === 256000, `got ${r2.maxTokens}`)
 
-  // First TASK request (user message now committed): narrow complex core + complex persona.
-  s.events.push({ type: 'user/message', seq: 10, data: userMsg('t1', complexText) })
+  // Surface is stable across phases (no promotion machinery).
+  s.events.push({ type: 'tool/call', seq: 20, data: { name: 'read', arguments: '{}' } })
   const a2 = await hh.h('system-prompt/assemble')[0](null, { agent }, async () => ({
     sections: [{ name: 'persona', text: 'x' }], tools: [
       { name: 'read' }, { name: 'edit' }, { name: 'glob' }, { name: 'grep' }, { name: 'pwsh' },
       { name: 'write' }, { name: 'vision' }, { name: 'web_search' }, { name: 'subagent' },
     ], contexts: [],
   }))
-  const taskTools = a2.tools.map((t) => t.name).sort()
-  check('task request: narrow core surface', JSON.stringify(taskTools) === JSON.stringify(['edit', 'glob', 'grep', 'pwsh', 'read'].sort()), `got ${taskTools.join(',')}`)
-  check('task request: complex persona (lag fixed)', a2.sections.find((x) => x.name === 'cadence-persona').text.includes('end each reasoning block with a decision'), 'complex persona')
-  const r2 = await hh.h('agent/request')[0]({ agent }, async () => ({ provider: 'p', model: 'm', maxTokens: 256000 }))
-  check('task request: no cap', r2.maxTokens === 256000, `got ${r2.maxTokens}`)
-
-  // First tool call → promoted → RESIDENT surface (web_search not resident → filtered; vision IS resident).
-  s.events.push({ type: 'tool/call', seq: 20, data: { name: 'read', arguments: '{}' } })
-  const a3 = await hh.h('system-prompt/assemble')[0](null, { agent }, async () => ({
-    sections: [{ name: 'persona', text: 'x' }], tools: [{ name: 'read' }, { name: 'write' }, { name: 'vision' }, { name: 'pwsh' }, { name: 'web_search' }], contexts: [],
-  }))
-  check('promoted: resident surface (vision resident, web_search filtered)',
-    JSON.stringify(a3.tools.map((t) => t.name).sort()) === JSON.stringify(['pwsh', 'read', 'vision', 'write'].sort()),
-    `tools=${a3.tools.map((t) => t.name).join(',')}`)
+  check('V4.12: surface unchanged after tool calls (no promotion phase)',
+    JSON.stringify(a2.tools.map((t) => t.name).sort()) === JSON.stringify(['edit', 'glob', 'grep', 'pwsh', 'read', 'subagent', 'vision', 'web_search', 'write'].sort()),
+    `tools=${a2.tools.map((t) => t.name).join(',')}`)
 }
 
-// ── 5. promotion: tool-call only (warm-up reply does NOT promote) ───────────
+// ── 5. V4.12: surface is phase-independent (simple too) ─────────────────────
 {
   const hh = makeHarness()
   const s = { id: 's5', events: [{ type: 'assistant/message', seq: 1, data: { message: { content: [] } } }] }
@@ -151,17 +161,15 @@ const simpleText = '写个 hello 脚本'
     tools: [{ name: 'read' }, { name: 'write' }, { name: 'edit' }, { name: 'pwsh' }, { name: 'vision' }, { name: 'web_search' }],
     contexts: [],
   }))
-  check('promotion: assistant message alone does NOT promote', a1.tools.length === 4,
-    `tools=${a1.tools.length} (narrow read/write/edit+pwsh)`)
+  check('V4.12: simple session also gets the resident surface (no narrow core)',
+    a1.tools.length === 6 && a1.tools.some((t) => t.name === 'web_search'), `tools=${a1.tools.length}`)
   s.events.push({ type: 'tool/call', seq: 2, data: { name: 'read', arguments: '{}' } })
   const a2 = await hh.h('system-prompt/assemble')[0](null, { agent: hh.agentOf(s) }, async () => ({
     sections: [{ name: 'persona', text: 'x' }],
     tools: [{ name: 'read' }, { name: 'write' }, { name: 'edit' }, { name: 'pwsh' }, { name: 'vision' }, { name: 'web_search' }],
     contexts: [],
   }))
-  check('promotion: tool call promotes to resident set (vision resident)', a2.tools.length === 5
-    && a2.tools.some((t) => t.name === 'vision') && !a2.tools.some((t) => t.name === 'web_search'),
-    `tools=${a2.tools.length} (resident read/write/edit+pwsh+vision; web_search filtered)`)
+  check('V4.12: surface stable after tool calls', a2.tools.length === 6, `tools=${a2.tools.length}`)
 }
 
 // ── 6. metacognition checkpoints ────────────────────────────────────────────
@@ -174,9 +182,9 @@ const simpleText = '写个 hello 脚本'
   const writeEv = { type: 'tool/call', seq: 50, data: { name: 'write', arguments: '{}' } }
   check('final: no write → false', core.finalCheckDue(mkSteps(15), {}) === false, 'no write')
   check('final: <8 steps after write → false', core.finalCheckDue([...mkSteps(3), writeEv, ...mkSteps(5, 60)], {}) === false, 'early')
-  check('final: ≥8 steps after write → true', core.finalCheckDue([...mkSteps(3), writeEv, ...mkSteps(9, 60), userMsgEv(99)], {}) === true, 'due')
-  check('final: relaxed text carries contrast principle', core.STEER_FINAL_CHECK.includes('对照参考核验') && core.STEER_FINAL_CHECK.includes('仅下载或检索不算'), 'contrast+flow')
-  check('final: relaxed text carries self-score line', core.STEER_FINAL_CHECK.includes('自评或外部评分不等于交付依据'), 'score line')
+  check('final: ≥8 steps after write → true (and ≥20 total, V4.6 floor)', core.finalCheckDue([...mkSteps(13), writeEv, ...mkSteps(9, 60), userMsgEv(99)], {}) === true, 'due')
+  check('final: relaxed text carries contrast principle', core.STEER_FINAL_CHECK.includes('against the reference') && core.STEER_FINAL_CHECK.includes('downloading or searching alone does not count'), 'contrast+flow')
+  check('final: relaxed text carries self-score line', core.STEER_FINAL_CHECK.includes('Self-ratings or external scores are not delivery evidence'), 'score line')
   const hh = makeHarness()
   const s = { id: 's6', events: [
     ...mkSteps(14),
@@ -186,11 +194,29 @@ const simpleText = '写个 hello 脚本'
   ] }
   hh.agentOf(s)
   const d1 = await hh.h('agent/pre-step')[0]({}, async () => ({ kind: 'enter', messages: [] }))
-  check('checkpoints: reflection injected', d1.messages.some((m) => m.content[0].text.includes('Cadence 自省')), 'reflection')
-  check('checkpoints: final check injected', d1.messages.some((m) => m.content[0].text.includes('Cadence 验收')), 'final')
+  check('checkpoints: reflection injected', d1.messages.some((m) => m.content[0].text.includes('Cadence reflection')), 'reflection')
+  check('checkpoints: final check injected', d1.messages.some((m) => m.content[0].text.includes('Cadence final check')), 'final')
   for (const m of d1.messages.filter((m) => m.source?.kind === 'plugin')) s.events.push({ type: 'user/message', seq: s.events.length + 1, data: m })
   const d2 = await hh.h('agent/pre-step')[0]({}, async () => ({ kind: 'enter', messages: [] }))
-  check('checkpoints: idempotent', !d2.messages.some((m) => m.content[0].text.includes('Cadence 自省') || m.content[0].text.includes('Cadence 验收')), 'no repeat')
+  check('checkpoints: idempotent', !d2.messages.some((m) => m.content[0].text.includes('Cadence reflection') || m.content[0].text.includes('Cadence final check')), 'no repeat')
+}
+
+// ── 5b. V4.8: execution-phase narration steer (once, at 2nd tool call) ─────
+{
+  const hh = makeHarness()
+  const s = { id: 's5b', events: [
+    { type: 'user/message', seq: 1, data: userMsg('u', complexText) },
+    { type: 'tool/call', seq: 2, data: { name: 'read', arguments: '{}' } },   // 1st call → promotion + hint
+  ] }
+  hh.agentOf(s)
+  const d1 = await hh.h('agent/pre-step')[0]({}, async () => ({ kind: 'enter', messages: [] }))
+  check('V4.8: narration NOT injected at 1st tool call (hint only, no stack)', !d1.messages.some((m) => m.content[0].text.includes('Cadence narration')), '1st call no narration')
+  s.events.push({ type: 'tool/call', seq: 3, data: { name: 'write', arguments: '{}' } }) // 2nd call
+  const d2 = await hh.h('agent/pre-step')[0]({}, async () => ({ kind: 'enter', messages: [] }))
+  check('V4.8: narration injected at 2nd tool call', d2.messages.some((m) => m.content[0].text.includes('Cadence narration')), '2nd call narration')
+  for (const m of d2.messages.filter((m) => m.source?.kind === 'plugin')) s.events.push({ type: 'user/message', seq: s.events.length + 100, data: m })
+  const d3 = await hh.h('agent/pre-step')[0]({}, async () => ({ kind: 'enter', messages: [] }))
+  check('V4.8: narration idempotent', !d3.messages.some((m) => m.content[0].text.includes('Cadence narration')), 'no repeat')
 }
 
 // ── 7. deadlock ladder (rebuilt, locked) ────────────────────────────────────
@@ -349,7 +375,31 @@ const simpleText = '写个 hello 脚本'
   const s = { id: 's10', events: [...mkSteps(12), { type: 'user/message', seq: 50, data: userMsg('task', complexText) }, long, long, long, long, long] }
   hh.agentOf(s)
   const d1 = await hh.h('agent/pre-step')[0]({}, async () => ({ kind: 'enter', messages: [] }))
-  check('converge: steer injected via pre-step', d1.messages.some((m) => m.content[0].text.includes('Cadence 收敛')), 'steer')
+  check('converge: steer injected via pre-step', d1.messages.some((m) => m.content[0].text.includes('Cadence converge')), 'steer')
+}
+
+// ── 10b. V4.10 (B2) block-depth steer (mirror of converge) ──────────────────
+{
+  const mkMsg = (text) => ({ type: 'assistant/message', seq: 1, data: { message: { content: [{ type: 'reasoning', text }] } } })
+  const mkSteps = (n) => Array.from({ length: n }, (_, i) => ({ type: 'step/start', seq: 100 + i, data: {} }))
+  const long = mkMsg('x'.repeat(6000))
+  const short = mkMsg('y'.repeat(200))
+  const mid = mkMsg('z'.repeat(1500))
+  check('deepen: short-median fixture → true', core.blockShortnessSteerDue([...mkSteps(12), short, short, long, short, short], {}) === true, 'short')
+  check('deepen: long-median fixture → false', core.blockShortnessSteerDue([...mkSteps(12), long, long, short, long, long], {}) === false, 'long')
+  check('deepen: mid-band fixture → false', core.blockShortnessSteerDue([...mkSteps(12), mid, mid, long, mid, mid], {}) === false, 'mid')
+  check('deepen: too few steps → false', core.blockShortnessSteerDue([short, short, short, short, short], {}) === false, 'steps')
+  check('deepen: user intervened → false', core.blockShortnessSteerDue([...mkSteps(12), { type: 'user/message', seq: 1, data: userMsg('u', 'x') }, { type: 'user/message', seq: 2, data: userMsg('u2', 'y') }, short, short, short, short, short], {}) === false, 'intervened')
+  check('deepen: floor override', core.blockShortnessSteerDue([...mkSteps(12), mid, mid, mid, mid, mid], { blockP50Floor: 2000 }) === true, 'floor')
+  check('deepen: threshold override does not fire floor', core.blockShortnessSteerDue([...mkSteps(12), short, short, short, short, short], { blockP50Floor: 100 }) === false, 'low floor')
+  const hh = makeHarness()
+  const s = { id: 's10b', events: [...mkSteps(12), { type: 'user/message', seq: 50, data: userMsg('task', complexText) }, short, short, long, short, short, short, short, short] }
+  hh.agentOf(s)
+  const d1 = await hh.h('agent/pre-step')[0]({}, async () => ({ kind: 'enter', messages: [] }))
+  check('deepen: steer injected via pre-step', d1.messages.some((m) => m.content[0].text.includes('Cadence deepen')), 'steer')
+  for (const m of d1.messages.filter((m) => m.source?.kind === 'plugin')) s.events.push({ type: 'user/message', seq: s.events.length + 1, data: m })
+  const d2 = await hh.h('agent/pre-step')[0]({}, async () => ({ kind: 'enter', messages: [] }))
+  check('deepen: idempotent (once per session)', !d2.messages.some((m) => m.content[0].text.includes('Cadence deepen')), 'no repeat')
 }
 
 // ── 11. reloader + trace_status (lean) ──────────────────────────────────────
@@ -360,11 +410,11 @@ const simpleText = '写个 hello 脚本'
   const s = { id: 's11', events: [{ type: 'user/message', seq: 1, data: userMsg('u11', '写个脚本') }, { type: 'tool/call', seq: 2, data: { name: 'read', arguments: '{}' } }] }
   hh.agentOf(s)
   const names = hh.registered.map((t) => t.name)
-  check('tools: trace_status + tool_search registered',
-    JSON.stringify(names.sort()) === JSON.stringify(['tool_search', 'trace_status'].sort()), names.join(','))
+  check('V4.9: tool_search REMOVED (17 calls / 0 successes rule)', !names.includes('tool_search')
+    && names.includes('trace_status'), names.join(','))
   const status = hh.registered.find((t) => t.name === 'trace_status')
   const out = await status.execute()
-  check('trace_status: lean fields', /build=v4\.5/.test(out) && /blockP50=0/.test(out) && !/band=|budget=|frequent=|requested=/.test(out), out.replace(/\n/g, ' | '))
+  check('trace_status: lean fields', /build=v4\.13/.test(out) && /blockP50=0/.test(out) && !/band=|budget=|frequent=|requested=/.test(out), out.replace(/\n/g, ' | '))
 }
 
 // ── 12. V4.1: resident catalog, compaction epoch, strip, hint ───────────────
@@ -404,23 +454,37 @@ const simpleText = '写个 hello 脚本'
     tools: [
       { name: 'read' }, { name: 'write' }, { name: 'edit' }, { name: 'glob' }, { name: 'grep' }, { name: 'pwsh' },
       { name: 'vision' }, { name: 'web_search' }, { name: 'subagent' }, { name: 'ask_user_question' },
-      { name: 'dev_inject_plugin' }, { name: 'workflow' }, { name: 'trace_status' }, { name: 'tool_search' },
+      { name: 'create_goal' }, { name: 'dev_inject_plugin' }, { name: 'workflow' }, { name: 'trace_status' },
     ],
     contexts: [],
   }))
   const names = a1.tools.map((t) => t.name)
   check('R1: resident + unlocked (vision) visible', names.includes('read') && names.includes('ask_user_question')
-    && names.includes('vision') && names.includes('tool_search'), names.join(','))
-  check('R1: heavy tools filtered until unlocked', !names.includes('web_search') && !names.includes('dev_inject_plugin')
+    && names.includes('vision') && !names.includes('tool_search'), names.join(','))
+  check('R1: heavy tools filtered until unlocked', !names.includes('dev_inject_plugin')
     && !names.includes('workflow'), names.join(','))
+  check('V4.10: web_search/goal resident (session-29 review)', names.includes('web_search') && names.includes('create_goal'), names.join(','))
 
-  // R1: subagents keep the full catalog.
+  // R1: subagents get the NARROWED working surface (V4.10 safety): the
+  // file/command/task core only — control-plane tools stay with the parent.
   const sub = { id: 's12s', header: { delegationDepth: 1 }, events: [] }
   const agentS = hh.agentOf(sub)
   const aS = await hh.h('system-prompt/assemble')[0](null, { agent: agentS }, async () => ({
-    sections: [{ name: 'persona', text: 'x' }], tools: [{ name: 'read' }, { name: 'dev_inject_plugin' }, { name: 'workflow' }], contexts: [],
+    sections: [{ name: 'persona', text: 'x' }], tools: [{ name: 'read' }, { name: 'dev_inject_plugin' }, { name: 'workflow' }, { name: 'ask_user_question' }, { name: 'pwsh' }], contexts: [],
   }))
-  check('R1: subagent keeps full catalog', aS.tools.length === 3, `tools=${aS.tools.length}`)
+  const sNames = aS.tools.map((t) => t.name)
+  check('R1: subagent surface narrowed (safety) — work tools kept, control-plane filtered',
+    sNames.includes('read') && sNames.includes('pwsh') && !sNames.includes('dev_inject_plugin')
+    && !sNames.includes('workflow') && !sNames.includes('ask_user_question'), sNames.join(','))
+
+  // V4.10: first-request cap applies to TOP-LEVEL agents only.
+  const hhCap = makeHarness()
+  const capTop = hhCap.agentOf({ id: 'cap-top', header: { delegationDepth: 0 }, events: [] })
+  const capSub = hhCap.agentOf({ id: 'cap-sub', header: { delegationDepth: 1 }, events: [] })
+  const rTop = await hhCap.h('agent/request')[0]({ agent: capTop }, async () => ({ maxTokens: 256000 }))
+  const rSub = await hhCap.h('agent/request')[0]({ agent: capSub }, async () => ({ maxTokens: 256000 }))
+  check('V4.10: top-level first request capped (32000)', rTop.maxTokens, 32000)
+  check('V4.10: subagent first request NOT capped (truncation fix)', rSub.maxTokens, 256000)
 
   // R2 assemble: post-compaction → resident only (no unlocked).
   const sC = { id: 's12c', events: [
@@ -432,15 +496,16 @@ const simpleText = '写个 hello 脚本'
   const agentC = hh.agentOf(sC)
   const aC = await hh.h('system-prompt/assemble')[0](null, { agent: agentC }, async () => ({
     sections: [{ name: 'persona', text: 'x' }],
-    tools: [{ name: 'read' }, { name: 'vision' }, { name: 'web_search' }, { name: 'ask_user_question' }, { name: 'tool_search' }],
+    tools: [{ name: 'read' }, { name: 'vision' }, { name: 'web_search' }, { name: 'ask_user_question' }],
     contexts: [],
   }))
   const cNames = aC.tools.map((t) => t.name)
   check('R2: post-compaction → resident only (vision stays resident, unlocked filtered)',
     cNames.includes('read') && cNames.includes('ask_user_question')
-    && cNames.includes('vision') && !cNames.includes('web_search'), cNames.join(','))
+    && cNames.includes('vision') && !cNames.includes('dev_inject_plugin'), cNames.join(','))
 
-  // R3: bootstrap-phase strip + instruction hint.
+  // R3 → V4.12: context strip REMOVED — AGENTS digest and skill catalog flow
+  // through from the first request; no instruction hint anymore.
   const hh3 = makeHarness()
   const s3 = { id: 's12d', events: [{ type: 'user/message', seq: 1, data: userMsg('u', complexText) }] }
   hh3.agentOf(s3)
@@ -450,21 +515,8 @@ const simpleText = '写个 hello 脚本'
     { id: 'skill', role: 'user', source: { kind: 'skill-catalog' }, content: [{ type: 'text', text: 'skills' }] },
   ] }))
   const kinds = d1.messages.map((m) => m.source?.kind)
-  check('R3: bootstrap strips injected context', !kinds.includes('agent-instructions') && !kinds.includes('skill-catalog')
-    && kinds.includes('user'), kinds.join(','))
-  // R3: AFTER promotion the strip is OFF (injected context passes through).
-  const hh3b = makeHarness()
-  const s3b = { id: 's12db', events: [
-    { type: 'user/message', seq: 1, data: userMsg('u', complexText) },
-    { type: 'tool/call', seq: 2, data: { name: 'read', arguments: '{}' } },
-  ] }
-  hh3b.agentOf(s3b)
-  const d1b = await hh3b.h('agent/pre-step')[0]({}, async () => ({ kind: 'enter', messages: [
-    userMsg('m1', '任务'),
-    { id: 'instr', role: 'user', source: { kind: 'agent-instructions' }, content: [{ type: 'text', text: 'AGENTS digest' }] },
-  ] }))
-  const kindsB = d1b.messages.map((m) => m.source?.kind)
-  check('R3: promoted phase does NOT strip injected context', kindsB.includes('agent-instructions'), kindsB.join(','))
+  check('V4.12: no context strip — agent-instructions/skill-catalog pass through',
+    kinds.includes('agent-instructions') && kinds.includes('skill-catalog') && kinds.includes('user'), kinds.join(','))
   const hh4 = makeHarness()
   const s4 = { id: 's12e', events: [
     { type: 'user/message', seq: 1, data: userMsg('u', complexText) },
@@ -472,11 +524,8 @@ const simpleText = '写个 hello 脚本'
   ] }
   hh4.agentOf(s4)
   const d2 = await hh4.h('agent/pre-step')[0]({}, async () => ({ kind: 'enter', messages: [] }))
-  check('R3: instruction hint injected once after promotion',
-    d2.messages.some((m) => m.content?.[0]?.text?.includes('Cadence 指令提示')), 'hint')
-  for (const m of d2.messages.filter((m) => m.source?.kind === 'plugin')) s4.events.push({ type: 'user/message', seq: s4.events.length + 100, data: m })
-  const d3 = await hh4.h('agent/pre-step')[0]({}, async () => ({ kind: 'enter', messages: [] }))
-  check('R3: hint idempotent', !d3.messages.some((m) => m.content?.[0]?.text?.includes('Cadence 指令提示')), 'no repeat')
+  check('V4.12: no instruction hint injected (strip removed with the hint)',
+    !d2.messages.some((m) => m.content?.[0]?.text?.includes('Cadence instruction hint')), 'no hint')
 }
 
 // ── 13. V4.2: F1 pre-classify, F2 request_tool, F3 frequent tier ────────────
@@ -497,62 +546,56 @@ const simpleText = '写个 hello 脚本'
     const a1 = await assemble(hh, agent, [
       { name: 'read' }, { name: 'edit' }, { name: 'glob' }, { name: 'grep' }, { name: 'pwsh' }, { name: 'write' }, { name: 'vision' },
     ])
-    check('F1: complex core on the very first request (no event yet)',
-      JSON.stringify(names(a1).sort()) === JSON.stringify(['edit', 'glob', 'grep', 'pwsh', 'read']), names(a1).join(','))
+    check('F1: complex first request gets the resident surface (V4.10)',
+      JSON.stringify(names(a1).sort()) === JSON.stringify(['edit', 'glob', 'grep', 'pwsh', 'read', 'vision', 'write']), names(a1).join(','))
     check('F1: complex persona on the very first request',
-      a1.sections.find((x) => x.name === 'cadence-persona').text.includes('end each reasoning block with a decision'), 'complex persona')
+      a1.sections.find((x) => x.name === 'cadence-persona').text.includes('think deeply first'), 'complex persona')
   }
-  // F1: warm-up stays 0 tools + SIMPLE persona even after complex pre-classify.
-  {
-    const hh = makeHarness()
-    const s = { id: 's13w', events: [] }
-    const agent = hh.agentOf(s)
-    agent.inbox.prepend = (_t, m) => hh.prepended.push(m)
-    hh.prepended = []
-    hh.h('agent/inbox/inserted')[0]({ agent, message: userMsg('r1', complexText) })
-    const w1 = await assemble(hh, agent, [{ name: 'read' }, { name: 'write' }, { name: 'edit' }, { name: 'pwsh' }])
-    check('F1: warm-up 0 tools + simple persona',
-      w1.tools.length === 0 && w1.sections.find((x) => x.name === 'cadence-persona').text.includes('Match your effort'),
-      `tools=${w1.tools.length}`)
-  }
-  // F1: simple insert does NOT upgrade; plugin insert never classifies.
+  // F1: simple insert does NOT upgrade; plugin insert never classifies —
+  // the surface is the resident catalog either way (V4.12).
   {
     const hh = makeHarness()
     const s = { id: 's13s', events: [] }
     const agent = hh.agentOf(s)
     hh.h('agent/inbox/inserted')[0]({ agent, message: userMsg('r1', simpleText) })
     const a1 = await assemble(hh, agent, [{ name: 'read' }, { name: 'write' }, { name: 'edit' }, { name: 'pwsh' }, { name: 'vision' }])
-    check('F1: simple insert → simple core (4 tools)', names(a1).length === 4 && !names(a1).includes('vision'), names(a1).join(','))
+    check('F1: simple insert → resident surface (V4.12, no narrow core)',
+      names(a1).length === 5 && names(a1).includes('vision'), names(a1).join(','))
     const hh2 = makeHarness()
     const s2 = { id: 's13p', events: [] }
     const agent2 = hh2.agentOf(s2)
     hh2.h('agent/inbox/inserted')[0]({ agent: agent2, message: { source: { kind: 'plugin' }, content: [{ type: 'text', text: complexText }] } })
     const a2 = await assemble(hh2, agent2, [{ name: 'read' }, { name: 'write' }, { name: 'edit' }, { name: 'pwsh' }, { name: 'vision' }])
-    check('F1: plugin insert never classifies', names(a2).length === 4, names(a2).join(','))
+    check('F1: plugin insert never classifies (surface still resident)', names(a2).length === 5, names(a2).join(','))
   }
 
-  // F1: the warm-up pre-step (batch contains no user message → effectiveClass
-  // simple) must NOT downgrade the inserted pre-classification.
+  // F1: the pre-step batch (no user message → effectiveClass simple) must
+  // NOT downgrade the inserted pre-classification.
   {
     const hh = makeHarness()
     const s = { id: 's13m', events: [] }
     const agent = hh.agentOf(s)
-    agent.inbox.prepend = (_t, m) => hh.prepended.push(m)
-    hh.prepended = []
     hh.h('agent/inbox/inserted')[0]({ agent, message: userMsg('r1', complexText) })
-    // warm-up assemble consumes anchorZeroTools, then the warm-up pre-step
-    // runs (batch contains only plugin messages → effectiveClass simple).
-    const w1 = await assemble(hh, agent, [{ name: 'read' }, { name: 'write' }, { name: 'edit' }, { name: 'pwsh' }])
-    check('F1: warm-up assemble 0 tools before pre-step', w1.tools.length === 0, 'warm-up')
     const d1 = await hh.h('agent/pre-step')[0]({}, async () => ({ kind: 'enter', messages: [
-      { id: 'w', role: 'user', source: { kind: 'plugin' }, content: [{ type: 'text', text: 'Cadence 热身' }] },
+      { id: 'w', role: 'user', source: { kind: 'plugin' }, content: [{ type: 'text', text: 'Cadence context' }] },
     ] }))
-    check('F1: warm-up pre-step does not downgrade complex', d1 !== undefined, 'ran')
+    check('F1: plugin-only pre-step does not downgrade complex', d1 !== undefined, 'ran')
     const a1 = await assemble(hh, agent, [
       { name: 'read' }, { name: 'edit' }, { name: 'glob' }, { name: 'grep' }, { name: 'pwsh' }, { name: 'write' },
     ])
-    check('F1: complex survives warm-up pre-step → complex core',
-      JSON.stringify(names(a1).sort()) === JSON.stringify(['edit', 'glob', 'grep', 'pwsh', 'read']), names(a1).join(','))
+    check('F1: complex first request gets the resident surface',
+      JSON.stringify(names(a1).sort()) === JSON.stringify(['edit', 'glob', 'grep', 'pwsh', 'read', 'write']), names(a1).join(','))
+    // The planning round sees delegation/goal/todo/search tools (V4.10+).
+    const hhF = makeHarness()
+    const sF = { id: 's13first', events: [{ type: 'user/message', seq: 1, data: userMsg('u', complexText) }] }
+    const agentF = hhF.agentOf(sF)
+    const aF = await assemble(hhF, agentF, [
+      { name: 'read' }, { name: 'edit' }, { name: 'glob' }, { name: 'grep' }, { name: 'pwsh' }, { name: 'write' },
+      { name: 'subagent' }, { name: 'create_goal' }, { name: 'todo_write' }, { name: 'web_search' }, { name: 'vision' },
+    ])
+    const fNames = names(aF)
+    check('V4.10: complex first request sees delegation+goal+todo+search (planning round)',
+      fNames.includes('subagent') && fNames.includes('create_goal') && fNames.includes('todo_write') && fNames.includes('web_search'), fNames.join(','))
   }
 
   // V4.3: vision is RESIDENT — visible right after promotion without any
@@ -565,10 +608,14 @@ const simpleText = '写个 hello 脚本'
     ] }
     const agent = hh.agentOf(s)
     const a1 = await assemble(hh, agent, [
-      { name: 'vision' }, { name: 'read' }, { name: 'pwsh' }, { name: 'web_search' }, { name: 'tool_search' }, { name: 'subagent' },
+      { name: 'vision' }, { name: 'read' }, { name: 'pwsh' }, { name: 'web_search' }, { name: 'subagent' },
     ])
-    check('V4.3: vision in promoted surface (resident)', names(a1).includes('vision') && !names(a1).includes('web_search'), names(a1).join(','))
+    check('V4.3: vision in promoted surface (resident)', names(a1).includes('vision'), names(a1).join(','))
     check('V4.3: request_tool NOT registered', hh.registered.find((t) => t.name === 'request_tool') === undefined, 'removed')
+    check('V4.9: content-density line in final check', core.STEER_FINAL_CHECK.includes('basic units')
+      && core.STEER_FINAL_CHECK.includes('proportionate') === false || core.STEER_FINAL_CHECK.includes('match the task'), 'density final')
+    check('V4.9: content-density question in reflection ⑥', core.STEER_REFLECTION.includes('content density proportionate')
+      && core.STEER_REFLECTION.includes('thinned for convenience'), 'density reflection')
     // post-compaction: vision stays (resident).
     const sC = { id: 's13visc', events: [
       { type: 'user/message', seq: 1, data: userMsg('u', complexText) },
@@ -576,28 +623,46 @@ const simpleText = '写个 hello 脚本'
       { type: 'compaction/end', seq: 10, data: { compactionId: 'c', turn: null } },
     ] }
     const agentC = hh.agentOf(sC)
-    const aC = await assemble(hh, agentC, [{ name: 'read' }, { name: 'vision' }, { name: 'web_search' }, { name: 'tool_search' }])
-    check('V4.3: vision stays in post-compaction surface', names(aC).includes('vision') && !names(aC).includes('web_search'), names(aC).join(','))
+    const aC = await assemble(hh, agentC, [{ name: 'read' }, { name: 'vision' }, { name: 'web_search' }])
+    check('V4.3: vision stays in post-compaction surface', names(aC).includes('vision') && !names(aC).includes('dev_inject_plugin'), names(aC).join(','))
   }
 
   // V4.3 (F4): finalCheckDue counts the in-flight step — a session ending
   // exactly `finalCheckAfterSteps` steps after its last write still fires.
+  // V4.6: a global step floor (finalCheckMinSteps=20) stops early fires on
+  // edit-heavy sessions (sessions 21/19 fired at step 12/15, delivery
+  // 147/152; calibrated on 8 archived sessions).
   {
     const mkSteps = (n, startSeq = 1) => Array.from({ length: n }, (_, i) => ({ type: 'step/start', seq: startSeq + i, data: {} }))
     const writeEv = { type: 'tool/call', seq: 50, data: { name: 'write', arguments: '{}' } }
-    // 7 steps after the write → not yet (7+1=8 < 8? no: 8 >= 8 → due at 7!)
-    check('F4: 6 steps after write → false', core.finalCheckDue([...mkSteps(3), writeEv, ...mkSteps(6, 60)], {}) === false, '6 steps')
-    check('F4: 7 steps after write → true (in-flight step counts)', core.finalCheckDue([...mkSteps(3), writeEv, ...mkSteps(7, 60)], {}) === true, '7 steps')
+    // 7 steps after the write but only 10 total steps → the floor blocks.
+    check('V4.6: <20 total steps → false (floor)', core.finalCheckDue([...mkSteps(3), writeEv, ...mkSteps(7, 60)], {}) === false, 'floor blocks')
+    // 7 steps after the write AND >= 20 total steps → due (F4 in-flight still counts).
+    check('V4.6: >=20 total steps → true', core.finalCheckDue([...mkSteps(13), writeEv, ...mkSteps(7, 60)], {}) === true, '13+7')
+    check('V4.6: floor configurable (15)', core.finalCheckDue([...mkSteps(8), writeEv, ...mkSteps(7, 60)], { finalCheckMinSteps: 15 }) === true, 'cfg 15')
   }
 }
 
 // ── 14. V4.3/V4.4: verification texts + resident additions ────────────────
 {
-  check('V4.3: real-form line in reflection', core.STEER_REFLECTION.includes('真实形态'), 'reflection ④ real-form')
-  check('V4.3: real-form lines in final check', core.STEER_FINAL_CHECK.includes('完整形态')
-    && core.STEER_FINAL_CHECK.includes('真实形态') && core.STEER_FINAL_CHECK.includes('字符摘要'), 'final check')
+  check('V4.3: real-form line in reflection', core.STEER_REFLECTION.includes('COMPLETE form'), 'reflection ④ real-form')
+  check('V4.3: real-form lines in final check', core.STEER_FINAL_CHECK.includes('complete form')
+    && core.STEER_FINAL_CHECK.includes('real form') && core.STEER_FINAL_CHECK.includes('character summary'), 'final check')
   check('V4.3: no failure-turn remnants', core.STEER_FAILURE_TURN === undefined
     && !core.STEER_FINAL_CHECK.includes('连续失败'), 'no F5')
+  check('V4.6: reflection covers dynamic/时序 (session-21 ghosting)', core.STEER_REFLECTION.includes('dynamic processes')
+    && core.STEER_REFLECTION.includes('timing behavior') && core.STEER_REFLECTION.includes('state residue'), 'reflection dynamic')
+  check('V4.6: final check broad-requirement line (session-21 single-side)', core.STEER_FINAL_CHECK.includes('broad requirements')
+    && core.STEER_FINAL_CHECK.includes('confirm scope'), 'broad req')
+  check('V4.6: env default-config line (sessions 19/20 soft-render)', core.ENV_STUCK_TEXT.includes('not the only configuration')
+    && core.ENV_STUCK_TEXT.includes('read-only'), 'env config')
+  check('V4.7: reflection intent question ⑤ (session-22 "I want" role)', core.STEER_REFLECTION.includes('What effect/quality am I actually aiming for'), 'intent ⑤')
+  check('V4.7: safety texts stay CHINESE (deadlock/subagent/veto)', core.STEER_STALL.includes('进度停滞')
+    && core.STEER_DEADLOCK.includes('已核验卡死') && core.STEER_PAUSE.includes('暂停指令')
+    && core.STEER_SUBAGENT.includes('子代理超时'), 'safety zh')
+  check('V4.7: english injections have english markers in text', core.STEER_REFLECTION.includes('Cadence reflection')
+    && core.STEER_FINAL_CHECK.includes('Cadence final check') && core.STEER_CONVERGE.includes('Cadence converge')
+    && core.STEER_DEEPEN.includes('Cadence deepen'), 'en markers')
 
   // V4.4: todo_write is resident (visible after promotion without unlock).
   const hh = makeHarness()
@@ -612,38 +677,11 @@ const simpleText = '写个 hello 脚本'
     contexts: [],
   }))
   const n = a1.tools.map((t) => t.name)
-  check('V4.4: todo_write in promoted surface (resident)', n.includes('todo_write') && n.includes('vision') && !n.includes('web_search'), n.join(','))
-
-  // V4.1 R1: tool_search execute behavior (catalog from assemble, query filter).
-  const hhT = makeHarness()
-  const sT = { id: 's14t', events: [{ type: 'tool/call', seq: 1, data: { name: 'read', arguments: '{}' } }] }
-  hhT.agentOf(sT)
-  await hhT.h('system-prompt/assemble')[0](null, { agent: hhT.agentOf(sT) }, async () => ({
-    sections: [], tools: [{ name: 'vision', description: 'look at images' }, { name: 'read', description: 'read files' }, { name: 'pwsh', description: 'run shell' }], contexts: [],
-  }))
-  const ts = hhT.registered.find((t) => t.name === 'tool_search')
-  const out1 = await ts.execute({ query: 'image' })
-  check('R1: tool_search finds by description', out1.includes('vision') && !out1.includes('read'), out1.replace(/\n/g, ' | '))
-  const out2 = await ts.execute({ query: 'no-such-tool' })
-  check('R1: tool_search miss returns empty note', out2.includes('no tools match'), out2)
+  check('V4.4: todo_write in promoted surface (resident)', n.includes('todo_write') && n.includes('vision') && n.includes('web_search'), n.join(','))
 }
 
-// ── 15. V4.5: token-AND tool_search + means-level detection ─────────────────
+// ── 15. V4.5: means-level detection (tool_search/matcatalog removed V4.9) ──
 {
-  // matchCatalog: token-AND semantics (session-19 regression: "vision image"
-  // was a whole-string substring and never matched).
-  const cat = [
-    { name: 'vision', description: 'Analyze one or more images through an external vision-language model (VLM) and return a plain-text description.' },
-    { name: 'read', description: 'Read a UTF-8 text file.' },
-    { name: 'pwsh', description: 'Execute a PowerShell command.' },
-  ]
-  check('V4.5: "vision image" matches vision (regression)', core.matchCatalog('vision image', cat).some((t) => t.name === 'vision'), 'vision image')
-  check('V4.5: "vision image" excludes read', !core.matchCatalog('vision image', cat).some((t) => t.name === 'read'), 'no read')
-  check('V4.5: multi-word AND "vision analyze description" matches', core.matchCatalog('vision analyze description', cat).some((t) => t.name === 'vision'), '3 words')
-  check('V4.5: unrelated words miss', core.matchCatalog('screenshot photo', cat).length === 0, 'miss')
-  check('V4.5: empty query returns empty', core.matchCatalog('', cat).length === 0, 'empty q')
-  check('V4.5: empty catalog returns empty', core.matchCatalog('vision', []).length === 0, 'empty cat')
-
   // meansStats: session-19-shaped events (5 runs of the same script,
   // cumulative > 15 min, last run failed) must fire.
   const mcmd = (seq, callId, command, t) => ({ type: 'tool/call', seq, time: t, data: { name: 'pwsh', callId, arguments: JSON.stringify({ command }) } })
@@ -676,28 +714,105 @@ const simpleText = '写个 hello 脚本'
   }
   check('V4.5: cumulative < threshold → no fire', core.meansStats(shortAcc, { minRuns: 5, minAccMs: 900000 }) === null, 'short acc')
 
-  // Soft layer threshold: 3 runs / 5 min fires the soft steer (hard silent).
+  // Soft layer threshold (explicit cfg — V4.12 defaults are relaxed to
+  // 5 runs / 10 min): 3 runs / 5 min fires the soft steer (hard silent).
   const softRuns = slowRuns.slice(0, 6)
+  const softCfg = { meansCostRuns: 3, meansCostMinSec: 300, unconvergedRuns: 8, unconvergedMinSec: 1200 }
   const softInj = core.pendingInjections({
     events: [{ type: 'user/message', seq: 1, data: userMsg('u', complexText) }, { type: 'tool/call', seq: 2, data: { name: 'read', arguments: '{}' } }, ...softRuns],
-    batchMessages: [], cls: 'complex', promoted: true, cfg: {}, nowMs: 0,
+    batchMessages: [], cls: 'complex', promoted: true, cfg: softCfg, nowMs: 0,
   })
   const softTexts = softInj.map((i) => i.text).join(' ')
-  check('V4.5: 3 slow failing runs → cost steer only', softTexts.includes('Cadence 手段成本') && !softTexts.includes('Cadence 手段复查'), 'soft only')
+  check('V4.5: 3 slow failing runs → cost steer only', softTexts.includes('Cadence means cost') && !softTexts.includes('Cadence means review'), 'soft only')
 
-  // pendingInjections: markers injected once, idempotent.
+  // pendingInjections: markers injected once, idempotent (explicit V4.5 cfg).
   const base = [
     { type: 'user/message', seq: 1, data: userMsg('u', complexText) },
     { type: 'tool/call', seq: 2, data: { name: 'read', arguments: '{}' } },
     ...slowRuns,
   ]
-  const inj1 = core.pendingInjections({ events: base, batchMessages: [], cls: 'complex', promoted: true, cfg: {}, nowMs: 0 })
+  const v45cfg = { meansCostRuns: 3, meansCostMinSec: 300, unconvergedRuns: 5, unconvergedMinSec: 900 }
+  const inj1 = core.pendingInjections({ events: base, batchMessages: [], cls: 'complex', promoted: true, cfg: v45cfg, nowMs: 0 })
   const texts1 = inj1.map((i) => i.text).join(' ')
-  check('V4.5: unconverged steer injected', texts1.includes('Cadence 手段复查') && texts1.includes('重新评估该手段本身'), 'hard steer')
-  check('V4.5: cost steer NOT injected when hard fires', !texts1.includes('Cadence 手段成本'), 'no soft when hard')
+  check('V4.5: unconverged steer injected', texts1.includes('Cadence means review') && texts1.includes('Re-evaluate the means itself'), 'hard steer')
+  check('V4.5: cost steer NOT injected when hard fires', !texts1.includes('Cadence means cost'), 'no soft when hard')
   const withCost = [...base, ...inj1.filter((i) => i.marker).map((i) => ({ type: 'user/message', seq: 999, data: { source: { kind: 'plugin' }, content: [{ type: 'text', text: i.text }] } }))]
-  const inj2 = core.pendingInjections({ events: withCost, batchMessages: [], cls: 'complex', promoted: true, cfg: {}, nowMs: 0 })
-  check('V4.5: steer idempotent', !inj2.some((i) => i.marker === 'Cadence 手段复查'), 'idempotent')
+  const inj2 = core.pendingInjections({ events: withCost, batchMessages: [], cls: 'complex', promoted: true, cfg: v45cfg, nowMs: 0 })
+  check('V4.5: steer idempotent', !inj2.some((i) => i.marker === 'Cadence means review'), 'idempotent')
+}
+
+// ── V4.13 (2026-08-22, session-30 review): interleave persona + goal guide
+// + truncation auto-recovery ─────────────────────────────────────────────────
+{
+  const cp = core.personaFor(true)
+  const sp = core.personaFor(false)
+  check('V4.13: complex persona interleaves thinking with tool calls (1A)',
+    cp.includes('Interleave thinking with tool calls') && cp.includes('first minimal step'), '1A text')
+  check('V4.13: simple persona has no interleave sentence', !sp.includes('Interleave thinking'), 'simple clean')
+  check('V4.13: complex persona guides goal creation (G1)',
+    cp.includes('create a goal first') && cp.includes('scale expectation') && cp.includes('drives rounds automatically'), 'G1 text')
+  check('V4.13: recover steer is static and generic',
+    core.STEER_RECOVER.includes('Cadence auto-recovery') && core.STEER_RECOVER.includes('FIRST minimal action'), 'recover text')
+}
+
+// 2A listener: max-tokens + zero tools → one prepend; once per session.
+{
+  const hh = makeHarness()
+  const s = { id: 's13a', events: [], header: { delegationDepth: 0 } }
+  const agent = hh.agentOf(s)
+  await hh.h('system-prompt/assemble')[0](null, { agent }, async () => ({ sections: [], tools: [] }))
+  const prepended = []
+  agent.inbox.prepend = (_t, m) => prepended.push(m)
+  const fire = (event) => hh.h('session/event').forEach((l) => l(s, event))
+  fire({ type: 'turn/end', data: { turn: 1, reason: { kind: 'max-tokens' } } })
+  check('2A: max-tokens zero-tool turn prepends recovery once',
+    prepended.length === 1 && prepended[0].content[0].text.includes('Cadence auto-recovery'), `n=${prepended.length}`)
+  check('2A: recovery message is a next-turn user plugin message',
+    prepended[0]?.source?.kind === 'plugin' && prepended[0]?.role === 'user', 'shape')
+  fire({ type: 'turn/end', data: { turn: 2, reason: { kind: 'max-tokens' } } })
+  check('2A: once per session', prepended.length === 1, `n=${prepended.length}`)
+}
+
+// 2A guards: turn with a tool call / goal session / autoRecover off / completed.
+{
+  const hh = makeHarness()
+  const s = { id: 's13b', events: [{ type: 'tool/call', data: { turn: 1, name: 'write', arguments: '{}' } }], header: { delegationDepth: 0 } }
+  const agent = hh.agentOf(s)
+  await hh.h('system-prompt/assemble')[0](null, { agent }, async () => ({ sections: [], tools: [] }))
+  const prepended = []
+  agent.inbox.prepend = (_t, m) => prepended.push(m)
+  hh.h('session/event').forEach((l) => l(s, { type: 'turn/end', data: { turn: 1, reason: { kind: 'max-tokens' } } }))
+  check('2A: turn with a tool call → no auto-recovery', prepended.length === 0, `n=${prepended.length}`)
+}
+{
+  const hh = makeHarness()
+  const s = { id: 's13c', events: [{ type: 'user/message', data: { source: { kind: 'goal', goalId: 'g1', revision: 1, round: 1 }, content: [{ type: 'text', text: 'round' }] } }], header: { delegationDepth: 0 } }
+  const agent = hh.agentOf(s)
+  await hh.h('system-prompt/assemble')[0](null, { agent }, async () => ({ sections: [], tools: [] }))
+  const prepended = []
+  agent.inbox.prepend = (_t, m) => prepended.push(m)
+  hh.h('session/event').forEach((l) => l(s, { type: 'turn/end', data: { turn: 1, reason: { kind: 'max-tokens' } } }))
+  check('2A: goal session → no auto-recovery', prepended.length === 0, `n=${prepended.length}`)
+}
+{
+  const hh = makeHarness({ autoRecover: false })
+  const s = { id: 's13d', events: [], header: { delegationDepth: 0 } }
+  const agent = hh.agentOf(s)
+  await hh.h('system-prompt/assemble')[0](null, { agent }, async () => ({ sections: [], tools: [] }))
+  const prepended = []
+  agent.inbox.prepend = (_t, m) => prepended.push(m)
+  hh.h('session/event').forEach((l) => l(s, { type: 'turn/end', data: { turn: 1, reason: { kind: 'max-tokens' } } }))
+  check('2A: autoRecover off → no auto-recovery', prepended.length === 0, `n=${prepended.length}`)
+}
+{
+  const hh = makeHarness()
+  const s = { id: 's13e', events: [], header: { delegationDepth: 0 } }
+  const agent = hh.agentOf(s)
+  await hh.h('system-prompt/assemble')[0](null, { agent }, async () => ({ sections: [], tools: [] }))
+  const prepended = []
+  agent.inbox.prepend = (_t, m) => prepended.push(m)
+  hh.h('session/event').forEach((l) => l(s, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } }))
+  check('2A: completed turn → no auto-recovery', prepended.length === 0, `n=${prepended.length}`)
 }
 
 console.log(results.join('\n'))

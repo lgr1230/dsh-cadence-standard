@@ -30,6 +30,7 @@
 
 import {
   DL_ESCALATE,
+  STEER_RECOVER,
   applyPersona, blockMedian, countMarkers,
   detectDeadlock, effectiveClass,
   extractText, isComplexTask, pendingInjections, personaFor,
@@ -138,6 +139,11 @@ export function apply(ctx, config) {
       ? config.firstRequestMaxTokens : 64000,
     // V4.8 (O2-A): execution-phase narration steer (once, complex).
     narrationAdvisor: config.narrationAdvisor !== false,
+    // V4.13 (2026-08-22, session-30 review): truncation auto-recovery —
+    // once per session, a max-tokens turn/end with ZERO tool calls gets a
+    // next-turn recovery message instead of waiting for the user's "继续".
+    // Goal sessions are excluded (the goal driver owns continuation there).
+    autoRecover: config.autoRecover !== false,
   }
   const residentSet = new Set(cfg.residentTools)
 
@@ -154,6 +160,8 @@ export function apply(ctx, config) {
    *  after that seq (the user confirmed) —or the user's own message already
    *  asked for the restart/kill. */
   const killVetoed = new Map()
+  /** Session id -> true once the truncation auto-recovery fired (once/session). */
+  const recovered = new Map()
 
   const stateOf = (session) => {
     let st = states.get(session.id)
@@ -331,6 +339,37 @@ export function apply(ctx, config) {
     return { kind: 'deny', reason: selfKillVetoMessage(process.pid) }
   })
 
+  // ── V4.13 (2026-08-22, session-30 review): truncation auto-recovery ──────
+  // A max-tokens turn/end that produced ZERO tool calls was a pure-thinking
+  // blowout (session-30: 64k reasoning tokens, 568s, nothing executed; the
+  // user had to send "继续"). Once per session, prepend a recovery message
+  // into the next-turn inbox so the work continues without user
+  // intervention. Goal sessions are excluded — the goal-round driver owns
+  // continuation there, and a spliced ordinary message would collide with
+  // its reservation as competingQueued. Every failure degrades to the
+  // harness's manual one-click recovery footer: never blocks, never twice.
+  ctx.on('session/event', (session, event) => {
+    if (!cfg.autoRecover) return
+    if (event?.type !== 'turn/end' || event.data?.reason?.kind !== 'max-tokens') return
+    const id = session?.id
+    if (id === undefined || recovered.has(id)) return
+    const ev = Array.isArray(session?.events) ? session.events : []
+    const turn = event.data?.turn
+    if (ev.some((e) => e.type === 'tool/call' && e.data?.turn === turn)) return
+    if (ev.some((e) => e.type === 'user/message' && e.data?.source?.kind === 'goal')) return
+    const agent = recentAgents.get(id) ?? agents.get(id)
+    if (agent === undefined) return
+    try {
+      agent.inbox.prepend('next-turn', {
+        id: `cadence-recover-${seqToken()}`,
+        role: 'user',
+        source: { kind: 'plugin', plugin: 'cadence-bootstrap' },
+        content: [{ type: 'text', text: STEER_RECOVER }],
+      })
+      recovered.set(id, true)
+    } catch { /* degrade to the manual recovery footer */ }
+  })
+
   // ── V4.9: tool_search REMOVED (measured: 17 calls across 7 sessions,
   // zero real successes —sessions 19/25 wasted 3/14 calls searching for
   // tools that were never in the catalog; the direct-call path (session 20
@@ -352,7 +391,7 @@ export function apply(ctx, config) {
       const steps = ev.filter((e) => e.type === 'step/start').length
       const calls = ev.filter((e) => e.type === 'tool/call').length
       return [
-        `build=v4.12`,
+        `build=v4.13`,
         `complexity=${st.complex ? 'complex' : 'simple'}`,
         `preClass=${st.preClass ? 'yes' : 'no'}`,
         `phase=resident`, // V4.12: no promotion phases

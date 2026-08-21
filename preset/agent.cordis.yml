@@ -1,4 +1,4 @@
-# cadence-standard preset (v4.12): pacing + safety.
+# cadence-standard preset (v4.13): pacing + safety.
 #
 # What remains: anchor first turn (0 tools + the only cap), monotonic
 # classification with F1 inbox-insert pre-classification (the FIRST task
@@ -88,8 +88,12 @@
     # V4.8 (O1) — first-request output cap: splits the planning monolith
     # (session-24: 92k reasoning tokens in ONE request, 24.5 min, cache 0%,
     # decision lock-in). V4.12: 32000 -> 64000 — a fuse, not a throttle; the
-    # model upgrade self-manages overthinking. Subagents are exempt (V4.10).
-    firstRequestMaxTokens: 64000
+    # model upgrade self-manages overthinking. V4.13 (session-30 review):
+    # 64000 -> 24000 — V4-Flash burned the whole 64k budget in one zero-tool
+    # reasoning block and was cut off mid-sentence (truncation return); the
+    # smaller fuse caps the blowout waste (~5min vs ~14min) and the
+    # auto-recovery listener continues the work. Subagents are exempt (V4.10).
+    firstRequestMaxTokens: 24000
     # V4.8 (O2-A) — execution-phase narration steer (once, complex, at the
     # second tool call). Session-24: the V4.7 narration guide fired in the
     # planning request and never reached execution (iAm=0.06); 22号

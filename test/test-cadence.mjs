@@ -414,7 +414,7 @@ const simpleText = '写个 hello 脚本'
     && names.includes('trace_status'), names.join(','))
   const status = hh.registered.find((t) => t.name === 'trace_status')
   const out = await status.execute()
-  check('trace_status: lean fields', /build=v4\.9/.test(out) && /blockP50=0/.test(out) && !/band=|budget=|frequent=|requested=/.test(out), out.replace(/\n/g, ' | '))
+  check('trace_status: lean fields', /build=v4\.13/.test(out) && /blockP50=0/.test(out) && !/band=|budget=|frequent=|requested=/.test(out), out.replace(/\n/g, ' | '))
 }
 
 // ── 12. V4.1: resident catalog, compaction epoch, strip, hint ───────────────
@@ -739,6 +739,80 @@ const simpleText = '写个 hello 脚本'
   const withCost = [...base, ...inj1.filter((i) => i.marker).map((i) => ({ type: 'user/message', seq: 999, data: { source: { kind: 'plugin' }, content: [{ type: 'text', text: i.text }] } }))]
   const inj2 = core.pendingInjections({ events: withCost, batchMessages: [], cls: 'complex', promoted: true, cfg: v45cfg, nowMs: 0 })
   check('V4.5: steer idempotent', !inj2.some((i) => i.marker === 'Cadence means review'), 'idempotent')
+}
+
+// ── V4.13 (2026-08-22, session-30 review): interleave persona + goal guide
+// + truncation auto-recovery ─────────────────────────────────────────────────
+{
+  const cp = core.personaFor(true)
+  const sp = core.personaFor(false)
+  check('V4.13: complex persona interleaves thinking with tool calls (1A)',
+    cp.includes('Interleave thinking with tool calls') && cp.includes('first minimal step'), '1A text')
+  check('V4.13: simple persona has no interleave sentence', !sp.includes('Interleave thinking'), 'simple clean')
+  check('V4.13: complex persona guides goal creation (G1)',
+    cp.includes('create a goal first') && cp.includes('scale expectation') && cp.includes('drives rounds automatically'), 'G1 text')
+  check('V4.13: recover steer is static and generic',
+    core.STEER_RECOVER.includes('Cadence auto-recovery') && core.STEER_RECOVER.includes('FIRST minimal action'), 'recover text')
+}
+
+// 2A listener: max-tokens + zero tools → one prepend; once per session.
+{
+  const hh = makeHarness()
+  const s = { id: 's13a', events: [], header: { delegationDepth: 0 } }
+  const agent = hh.agentOf(s)
+  await hh.h('system-prompt/assemble')[0](null, { agent }, async () => ({ sections: [], tools: [] }))
+  const prepended = []
+  agent.inbox.prepend = (_t, m) => prepended.push(m)
+  const fire = (event) => hh.h('session/event').forEach((l) => l(s, event))
+  fire({ type: 'turn/end', data: { turn: 1, reason: { kind: 'max-tokens' } } })
+  check('2A: max-tokens zero-tool turn prepends recovery once',
+    prepended.length === 1 && prepended[0].content[0].text.includes('Cadence auto-recovery'), `n=${prepended.length}`)
+  check('2A: recovery message is a next-turn user plugin message',
+    prepended[0]?.source?.kind === 'plugin' && prepended[0]?.role === 'user', 'shape')
+  fire({ type: 'turn/end', data: { turn: 2, reason: { kind: 'max-tokens' } } })
+  check('2A: once per session', prepended.length === 1, `n=${prepended.length}`)
+}
+
+// 2A guards: turn with a tool call / goal session / autoRecover off / completed.
+{
+  const hh = makeHarness()
+  const s = { id: 's13b', events: [{ type: 'tool/call', data: { turn: 1, name: 'write', arguments: '{}' } }], header: { delegationDepth: 0 } }
+  const agent = hh.agentOf(s)
+  await hh.h('system-prompt/assemble')[0](null, { agent }, async () => ({ sections: [], tools: [] }))
+  const prepended = []
+  agent.inbox.prepend = (_t, m) => prepended.push(m)
+  hh.h('session/event').forEach((l) => l(s, { type: 'turn/end', data: { turn: 1, reason: { kind: 'max-tokens' } } }))
+  check('2A: turn with a tool call → no auto-recovery', prepended.length === 0, `n=${prepended.length}`)
+}
+{
+  const hh = makeHarness()
+  const s = { id: 's13c', events: [{ type: 'user/message', data: { source: { kind: 'goal', goalId: 'g1', revision: 1, round: 1 }, content: [{ type: 'text', text: 'round' }] } }], header: { delegationDepth: 0 } }
+  const agent = hh.agentOf(s)
+  await hh.h('system-prompt/assemble')[0](null, { agent }, async () => ({ sections: [], tools: [] }))
+  const prepended = []
+  agent.inbox.prepend = (_t, m) => prepended.push(m)
+  hh.h('session/event').forEach((l) => l(s, { type: 'turn/end', data: { turn: 1, reason: { kind: 'max-tokens' } } }))
+  check('2A: goal session → no auto-recovery', prepended.length === 0, `n=${prepended.length}`)
+}
+{
+  const hh = makeHarness({ autoRecover: false })
+  const s = { id: 's13d', events: [], header: { delegationDepth: 0 } }
+  const agent = hh.agentOf(s)
+  await hh.h('system-prompt/assemble')[0](null, { agent }, async () => ({ sections: [], tools: [] }))
+  const prepended = []
+  agent.inbox.prepend = (_t, m) => prepended.push(m)
+  hh.h('session/event').forEach((l) => l(s, { type: 'turn/end', data: { turn: 1, reason: { kind: 'max-tokens' } } }))
+  check('2A: autoRecover off → no auto-recovery', prepended.length === 0, `n=${prepended.length}`)
+}
+{
+  const hh = makeHarness()
+  const s = { id: 's13e', events: [], header: { delegationDepth: 0 } }
+  const agent = hh.agentOf(s)
+  await hh.h('system-prompt/assemble')[0](null, { agent }, async () => ({ sections: [], tools: [] }))
+  const prepended = []
+  agent.inbox.prepend = (_t, m) => prepended.push(m)
+  hh.h('session/event').forEach((l) => l(s, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } }))
+  check('2A: completed turn → no auto-recovery', prepended.length === 0, `n=${prepended.length}`)
 }
 
 console.log(results.join('\n'))

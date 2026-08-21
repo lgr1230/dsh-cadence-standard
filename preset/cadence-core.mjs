@@ -104,7 +104,23 @@ const COMPLEX_PERSONA =
   // V4.11: "verify key assumptions before acting" removed from narration
   // (a pre-action verification gate can stall momentum).
   + 'Narrate your process in first person during execution (state findings, '
-  + 'commit next steps).'
+  + 'commit next steps).\n'
+  // V4.13 (2026-08-22, session-30 review): interleave thinking with tool
+  // calls — session-30 turn1 burned the whole 64k output budget in ONE
+  // reasoning block (568s, zero tools) and was cut off mid-sentence; the
+  // same session's turn2 interleaved and never truncated. Distinct from the
+  // direct-task "make one clear move": this targets finish-the-plan-in-the-
+  // head blowouts, not first-step hesitation.
+  + 'Interleave thinking with tool calls: do not finish the whole plan in your head '
+  + 'before the first action — take the first minimal step, then deepen.\n'
+  // V4.13 (2026-08-22, session-30 review): long tasks should ride the goal
+  // mechanism instead of the preset inventing scale rules — the goal driver
+  // auto-queues rounds while the goal is active, which both sustains
+  // multi-stage work and carries the scale expectation inside the objective.
+  + 'For long-running or multi-stage tasks, create a goal first (create_goal) whose '
+  + 'objective states the delivery form and the scale expectation (order of magnitude, '
+  + 'density, coverage) — not the minimal viable version; the goal mechanism drives '
+  + 'rounds automatically until completion.'
 
 export function personaFor(complex) {
   return complex ? COMPLEX_PERSONA : SIMPLE_PERSONA
@@ -228,6 +244,18 @@ export const STEER_REFLECTION =
   // removed — smallest-first nudges minimal patching and no-restart blocks
   // bold rewrites (user review: "不惜重构").
   + 'If there is a gap, close it in the order that best serves the goal.'
+
+/** V4.13 (2026-08-22, session-30 review): truncation auto-recovery message.
+ *  Injected once per session by the bootstrap's session/event listener when a
+ *  max-tokens turn/end produced ZERO tool calls — the turn's thinking was cut
+ *  off before any action (session-30: 64k reasoning tokens, 568s, nothing
+ *  executed, user had to say "继续"). The plan is not lost (it is in the
+ *  visible reasoning), so continue with the first minimal action instead of
+ *  re-planning. Static, model-facing English, zero interpolation (P2). */
+export const STEER_RECOVER =
+  '\nCadence auto-recovery: the previous turn was cut off at the output limit before executing '
+  + 'any action. Do not re-plan from scratch — take the FIRST minimal action now '
+  + '(write the first file / run the first command), then continue step by step.'
 
 /** Final requirement check — a delivery audit against the original task.
  *  V4.3+: full-artifact / real-form verification lines (V4.2 lesson).
