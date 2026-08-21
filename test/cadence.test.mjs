@@ -109,19 +109,37 @@ const simpleText = '写个 hello 脚本'
   check('guide: every complex message gets the FULL guide', fulls === 1, `full guides=${fulls}`)
 }
 
-// ── 4. V4.12: no anchor, no promotion — resident surface + cap fuse ────────
+// ── 4. V4.14: warm-up anchor turn + resident surface + 32k fuse ────────────
 {
   const hh = makeHarness()
   const s = { id: 's4', events: [], header: { delegationDepth: 0 } }
   const agent = hh.agentOf(s)
-
-  // No anchor turn: nothing prepended, first request is the task request.
   agent.inbox.prepend = (_t, m) => hh.prepended.push(m)
   hh.prepended = []
-  hh.h('agent/inbox/inserted')[0]({ agent, message: userMsg('r1', complexText) })
-  check('V4.12: no anchor turn prepended', hh.prepended.length === 0, `${hh.prepended.length} prepended`)
 
-  // First request = resident surface + first-request cap (64k fuse).
+  // Fresh top-level user message → anchor notice prepended (warm-up turn).
+  hh.h('agent/inbox/inserted')[0]({ agent, message: userMsg('r1', complexText) })
+  check('V4.14: fresh session prepends the anchor notice', hh.prepended.length === 1
+    && hh.prepended[0].content[0].text.includes('Cadence 热身'), `n=${hh.prepended.length}`)
+
+  // Warm-up assemble: ZERO tools + SIMPLE persona (even for a complex task).
+  const warm = await hh.h('system-prompt/assemble')[0](null, { agent }, async () => ({
+    sections: [{ name: 'persona', text: 'x' }], tools: [
+      { name: 'read' }, { name: 'write' }, { name: 'edit' }, { name: 'pwsh' }, { name: 'vision' },
+      { name: 'web_search' }, { name: 'create_goal' },
+    ], contexts: [],
+  }))
+  check('V4.14: warm-up turn has zero tools', warm.tools.length === 0, `tools=${warm.tools.length}`)
+  check('V4.14: warm-up uses SIMPLE persona',
+    warm.sections.find((x) => x.name === 'cadence-persona').text.includes('Match your effort'), 'simple persona')
+
+  // Warm-up request: capped at 2048; a later request must not inherit it.
+  const rw = await hh.h('agent/request')[0]({ agent }, async () => ({ provider: 'p', model: 'm', maxTokens: 256000 }))
+  check('V4.14: warm-up request capped at 2048', rw.maxTokens === 2048, `got ${rw.maxTokens}`)
+  const rx = await hh.h('agent/request')[0]({ agent }, async () => ({ provider: 'p', model: 'm', maxTokens: 2048 }))
+  check('V4.14: inherited 2048 cap released for the task request', rx.maxTokens === undefined, `got ${rx.maxTokens}`)
+
+  // Task request: resident surface + complex persona + 32k first-task cap.
   const a1 = await hh.h('system-prompt/assemble')[0](null, { agent }, async () => ({
     sections: [{ name: 'persona', text: 'x' }], tools: [
       { name: 'read' }, { name: 'edit' }, { name: 'glob' }, { name: 'grep' }, { name: 'pwsh' },
@@ -129,14 +147,14 @@ const simpleText = '写个 hello 脚本'
     ], contexts: [],
   }))
   const taskTools = a1.tools.map((t) => t.name).sort()
-  check('V4.12: first request = resident surface (delegation/goal visible from the start)',
+  check('V4.14: task request = resident surface (delegation/goal visible from the start)',
     JSON.stringify(taskTools) === JSON.stringify(['create_goal', 'edit', 'glob', 'grep', 'pwsh', 'read', 'subagent', 'vision', 'web_search', 'write'].sort()),
     `got ${taskTools.join(',')}`)
-  check('task request: complex persona', a1.sections.find((x) => x.name === 'cadence-persona').text.includes('think deeply first'), 'complex persona')
+  check('V4.14: task request complex persona', a1.sections.find((x) => x.name === 'cadence-persona').text.includes('think deeply first'), 'complex persona')
   const r1 = await hh.h('agent/request')[0]({ agent }, async () => ({ provider: 'p', model: 'm', maxTokens: 256000 }))
-  check('V4.13b: first request capped at 32000 (V4.8 calibrated fuse)', r1.maxTokens === 32000, `got ${r1.maxTokens}`)
+  check('V4.14: first task request capped at 32000 (V4.8 calibrated fuse)', r1.maxTokens === 32000, `got ${r1.maxTokens}`)
   const r2 = await hh.h('agent/request')[0]({ agent }, async () => ({ provider: 'p', model: 'm', maxTokens: 256000 }))
-  check('V4.12: later requests uncapped', r2.maxTokens === 256000, `got ${r2.maxTokens}`)
+  check('V4.14: later requests uncapped', r2.maxTokens === 256000, `got ${r2.maxTokens}`)
 
   // Surface is stable across phases (no promotion machinery).
   s.events.push({ type: 'tool/call', seq: 20, data: { name: 'read', arguments: '{}' } })
@@ -146,9 +164,29 @@ const simpleText = '写个 hello 脚本'
       { name: 'write' }, { name: 'vision' }, { name: 'web_search' }, { name: 'subagent' },
     ], contexts: [],
   }))
-  check('V4.12: surface unchanged after tool calls (no promotion phase)',
+  check('V4.14: surface unchanged after tool calls (no promotion phase)',
     JSON.stringify(a2.tools.map((t) => t.name).sort()) === JSON.stringify(['edit', 'glob', 'grep', 'pwsh', 'read', 'subagent', 'vision', 'web_search', 'write'].sort()),
     `tools=${a2.tools.map((t) => t.name).join(',')}`)
+}
+
+// V4.14: non-fresh sessions never re-anchor; anchorFirstTurn off disables it.
+{
+  const hh = makeHarness()
+  const s = { id: 's4b', events: [{ type: 'user/message', seq: 1, data: userMsg('old', 'hi') }], header: { delegationDepth: 0 } }
+  const agent = hh.agentOf(s)
+  agent.inbox.prepend = (_t, m) => hh.prepended.push(m)
+  hh.prepended = []
+  hh.h('agent/inbox/inserted')[0]({ agent, message: userMsg('r2', complexText) })
+  check('V4.14: non-fresh session does not re-anchor', hh.prepended.length === 0, `n=${hh.prepended.length}`)
+}
+{
+  const hh = makeHarness({ anchorFirstTurn: false })
+  const s = { id: 's4c', events: [], header: { delegationDepth: 0 } }
+  const agent = hh.agentOf(s)
+  agent.inbox.prepend = (_t, m) => hh.prepended.push(m)
+  hh.prepended = []
+  hh.h('agent/inbox/inserted')[0]({ agent, message: userMsg('r3', complexText) })
+  check('V4.14: anchorFirstTurn off → no anchor', hh.prepended.length === 0, `n=${hh.prepended.length}`)
 }
 
 // ── 5. V4.12: surface is phase-independent (simple too) ─────────────────────
@@ -414,7 +452,7 @@ const simpleText = '写个 hello 脚本'
     && names.includes('trace_status'), names.join(','))
   const status = hh.registered.find((t) => t.name === 'trace_status')
   const out = await status.execute()
-  check('trace_status: lean fields', /build=v4\.13/.test(out) && /blockP50=0/.test(out) && !/band=|budget=|frequent=|requested=/.test(out), out.replace(/\n/g, ' | '))
+  check('trace_status: lean fields', /build=v4\.14/.test(out) && /blockP50=0/.test(out) && !/band=|budget=|frequent=|requested=/.test(out), out.replace(/\n/g, ' | '))
 }
 
 // ── 12. V4.1: resident catalog, compaction epoch, strip, hint ───────────────
@@ -741,8 +779,7 @@ const simpleText = '写个 hello 脚本'
   check('V4.5: steer idempotent', !inj2.some((i) => i.marker === 'Cadence means review'), 'idempotent')
 }
 
-// ── V4.13 (2026-08-22, session-30 review): interleave persona + goal guide
-// + truncation auto-recovery ─────────────────────────────────────────────────
+// ── V4.13 (2026-08-22, session-30 review): interleave persona + goal guide ──
 {
   const cp = core.personaFor(true)
   const sp = core.personaFor(false)
@@ -754,139 +791,15 @@ const simpleText = '写个 hello 脚本'
   check('V4.13b: code goes to tools, not into reasoning (session-dcc6d859)',
     cp.includes('do not draft the full code inside reasoning') && cp.includes('write/edit tools'), 'F3 text')
   check('V4.13b: simple persona has no code-draft sentence', !sp.includes('draft the full code'), 'simple clean')
-  check('V4.13: recover steer is static and generic',
-    core.STEER_RECOVER.includes('Cadence auto-recovery') && core.STEER_RECOVER.includes('FIRST minimal action'), 'recover text')
 }
 
-// 2A listener (V4.13c): driven by `agent/status` idle — session/event is
-// published on the root/session ctx which an agent-scoped preset plugin does
-// NOT receive (live-verified: V4.13b cut 2/2 turns with zero recoveries).
-// NOTE: this fake harness cannot verify event REACHABILITY — only logic —
-// so the channel choice rests on the live probe (agent/status shares the
-// loopCtx dispatch with pre-step, empirically reachable).
+// ── V4.14 (user decision): 2A auto-recovery REMOVED — the restored anchor
+// turn prevents the first-request blowout; truncation protection no longer
+// needs a continue-the-turn crutch. STEER_RECOVER is gone. ───────────────────
 {
+  check('V4.14: auto-recovery steer removed', core.STEER_RECOVER === undefined, 'no STEER_RECOVER')
   const hh = makeHarness()
-  const s = { id: 's13a', events: [], header: { delegationDepth: 0 } }
-  const agent = hh.agentOf(s)
-  await hh.h('system-prompt/assemble')[0](null, { agent }, async () => ({ sections: [], tools: [] }))
-  const prepended = []
-  agent.inbox.prepend = (_t, m) => prepended.push(m)
-  const fire = (turn) => {
-    s.events.push({ type: 'step/start', seq: 100 + turn * 2, data: { turn, step: 1 } })
-    s.events.push({ type: 'turn/end', seq: 101 + turn * 2, data: { turn, reason: { kind: 'max-tokens' } } })
-    hh.h('agent/status').forEach((l) => l({ agent, status: 'idle' }))
-  }
-  fire(1)
-  check('2A: max-tokens zero-tool step prepends recovery',
-    prepended.length === 1 && prepended[0].content[0].text.includes('Cadence auto-recovery'), `n=${prepended.length}`)
-  check('2A: recovery message is a next-turn user plugin message',
-    prepended[0]?.source?.kind === 'plugin' && prepended[0]?.role === 'user', 'shape')
-  fire(2)
-  check('2A: second recovery fires (2× per session)', prepended.length === 2, `n=${prepended.length}`)
-  fire(3)
-  check('2A: capped at 2 per session', prepended.length === 2, `n=${prepended.length}`)
-}
-
-// 2A step-level guard: tools BEFORE the last step/start do not block recovery;
-// tools INSIDE the truncated step do. Goal sessions are allowed (driver disarmed).
-{
-  const hh = makeHarness()
-  const s = {
-    id: 's13b',
-    events: [
-      { type: 'step/start', seq: 1, data: { turn: 1, step: 1 } },
-      { type: 'tool/call', seq: 2, data: { turn: 1, name: 'create_goal', arguments: '{}' } },
-      { type: 'step/start', seq: 3, data: { turn: 1, step: 2 } },
-      { type: 'turn/end', seq: 4, data: { turn: 1, reason: { kind: 'max-tokens' } } },
-    ],
-    header: { delegationDepth: 0 },
-  }
-  const agent = hh.agentOf(s)
-  await hh.h('system-prompt/assemble')[0](null, { agent }, async () => ({ sections: [], tools: [] }))
-  const prepended = []
-  agent.inbox.prepend = (_t, m) => prepended.push(m)
-  // session-dcc6d859 shape: tools in step1, truncation in zero-tool step2 → recover.
-  hh.h('agent/status').forEach((l) => l({ agent, status: 'idle' }))
-  check('2A: tools before the truncated step do not block recovery (session-dcc6d859)', prepended.length === 1, `n=${prepended.length}`)
-}
-{
-  const hh = makeHarness()
-  const s = {
-    id: 's13c',
-    events: [
-      { type: 'step/start', seq: 1, data: { turn: 1, step: 1 } },
-      { type: 'tool/call', seq: 2, data: { turn: 1, name: 'write', arguments: '{}' } },
-      { type: 'turn/end', seq: 3, data: { turn: 1, reason: { kind: 'max-tokens' } } },
-    ],
-    header: { delegationDepth: 0 },
-  }
-  const agent = hh.agentOf(s)
-  await hh.h('system-prompt/assemble')[0](null, { agent }, async () => ({ sections: [], tools: [] }))
-  const prepended = []
-  agent.inbox.prepend = (_t, m) => prepended.push(m)
-  hh.h('agent/status').forEach((l) => l({ agent, status: 'idle' }))
-  check('2A: tool call inside the truncated step blocks recovery', prepended.length === 0, `n=${prepended.length}`)
-}
-{
-  const hh = makeHarness()
-  const s = {
-    id: 's13d',
-    events: [
-      { type: 'step/start', seq: 1, data: { turn: 1, step: 1 } },
-      { type: 'user/message', seq: 2, data: { source: { kind: 'goal', goalId: 'g1', revision: 1, round: 1 }, content: [{ type: 'text', text: 'round' }] } },
-      { type: 'turn/end', seq: 3, data: { turn: 1, reason: { kind: 'max-tokens' } } },
-    ],
-    header: { delegationDepth: 0 },
-  }
-  const agent = hh.agentOf(s)
-  await hh.h('system-prompt/assemble')[0](null, { agent }, async () => ({ sections: [], tools: [] }))
-  const prepended = []
-  agent.inbox.prepend = (_t, m) => prepended.push(m)
-  hh.h('agent/status').forEach((l) => l({ agent, status: 'idle' }))
-  check('2A: goal session recovers too (driver disarmed, no collision)', prepended.length === 1, `n=${prepended.length}`)
-}
-{
-  const hh = makeHarness({ autoRecover: false })
-  const s = { id: 's13e', events: [], header: { delegationDepth: 0 } }
-  const agent = hh.agentOf(s)
-  await hh.h('system-prompt/assemble')[0](null, { agent }, async () => ({ sections: [], tools: [] }))
-  const prepended = []
-  agent.inbox.prepend = (_t, m) => prepended.push(m)
-  s.events.push({ type: 'step/start', seq: 1, data: { turn: 1, step: 1 } })
-  s.events.push({ type: 'turn/end', seq: 2, data: { turn: 1, reason: { kind: 'max-tokens' } } })
-  hh.h('agent/status').forEach((l) => l({ agent, status: 'idle' }))
-  check('2A: autoRecover off → no auto-recovery', prepended.length === 0, `n=${prepended.length}`)
-}
-{
-  const hh = makeHarness()
-  const s = { id: 's13f', events: [], header: { delegationDepth: 0 } }
-  const agent = hh.agentOf(s)
-  await hh.h('system-prompt/assemble')[0](null, { agent }, async () => ({ sections: [], tools: [] }))
-  const prepended = []
-  agent.inbox.prepend = (_t, m) => prepended.push(m)
-  s.events.push({ type: 'step/start', seq: 1, data: { turn: 1, step: 1 } })
-  s.events.push({ type: 'turn/end', seq: 2, data: { turn: 1, reason: { kind: 'completed' } } })
-  hh.h('agent/status').forEach((l) => l({ agent, status: 'idle' }))
-  check('2A: completed turn → no auto-recovery', prepended.length === 0, `n=${prepended.length}`)
-}
-
-// 2A pre-step backstop: a manual "继续" after a zero-tool truncation gets the
-// recovery steer once (the auto path may be unreachable; the backstop keeps
-// the next request from re-burning the fuse).
-{
-  const hh = makeHarness()
-  const s = { id: 's13g', events: [
-    { type: 'step/start', seq: 1, data: { turn: 1, step: 1 } },
-    { type: 'turn/end', seq: 2, data: { turn: 1, reason: { kind: 'max-tokens' } } },
-  ], header: { delegationDepth: 0 } }
-  const agent = hh.agentOf(s)
-  await hh.h('system-prompt/assemble')[0](null, { agent }, async () => ({ sections: [], tools: [] }))
-  const d1 = await hh.h('agent/pre-step')[0]({}, async () => ({ kind: 'enter', messages: [userMsg('u2', '继续')] }))
-  check('2A backstop: manual continue after zero-tool truncation gets recovery steer',
-    d1.messages.some((m) => m.content?.[0]?.text?.includes('Cadence auto-recovery')), 'backstop')
-  const d2 = await hh.h('agent/pre-step')[0]({}, async () => ({ kind: 'enter', messages: [userMsg('u3', '继续')] }))
-  check('2A backstop: once per session',
-    !d2.messages.some((m) => m.content?.[0]?.text?.includes('Cadence auto-recovery')), 'once')
+  check('V4.14: no agent/status listener registered', (hh.listeners['agent/status'] ?? []).length === 0, `n=${(hh.listeners['agent/status'] ?? []).length}`)
 }
 
 console.log(results.join('\n'))

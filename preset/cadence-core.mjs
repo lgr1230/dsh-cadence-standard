@@ -250,17 +250,24 @@ export const STEER_REFLECTION =
   // bold rewrites (user review: "不惜重构").
   + 'If there is a gap, close it in the order that best serves the goal.'
 
-/** V4.13 (2026-08-22, session-30 review): truncation auto-recovery message.
- *  Injected once per session by the bootstrap's session/event listener when a
- *  max-tokens turn/end produced ZERO tool calls — the turn's thinking was cut
- *  off before any action (session-30: 64k reasoning tokens, 568s, nothing
- *  executed, user had to say "继续"). The plan is not lost (it is in the
- *  visible reasoning), so continue with the first minimal action instead of
- *  re-planning. Static, model-facing English, zero interpolation (P2). */
-export const STEER_RECOVER =
-  '\nCadence auto-recovery: the previous turn was cut off at the output limit before executing '
-  + 'any action. Do not re-plan from scratch — take the FIRST minimal action now '
-  + '(write the first file / run the first command), then continue step by step.'
+/** V4.14 (2026-08-22, user decision): warm-up anchor turn — RESTORED after
+ *  V4.12 removed it and three sessions truncated (30号, session-dcc6d859,
+ *  session-21bd3d46: the first request burned 24k/32k/64k in zero-tool
+ *  reasoning, the model drafts code inside reasoning before acting). The
+ *  warm-up turn costs ~seconds (0 tools, 2048 cap) and gives the second
+ *  request a ready context to act immediately — the V2.2 mechanism that
+ *  cured truncation (V1/V2 era: 4096/16384 cutoffs) and held through
+ *  V4.4-V4.11 (sessions 26/28/29: zero truncations).
+ *  Static, zero interpolation (P2). */
+export const ANCHOR_TEXT =
+  'Cadence 热身：本轮不执行任务、不调用任何工具。请用一两句话确认你已就绪，并简述你接下来会如何处理下一条消息。不要思考、不要规划、不要使用工具。'
+
+/** True for a top-level fresh session (no prior user message) — the anchor
+ *  turn contract. Subagents are never anchored. */
+export function isFreshTopLevel(agent) {
+  if ((agent?.session?.header?.delegationDepth ?? 0) > 0) return false
+  return !(agent?.session?.events ?? []).some((event) => event.type === 'user/message')
+}
 
 /** Final requirement check — a delivery audit against the original task.
  *  V4.3+: full-artifact / real-form verification lines (V4.2 lesson).

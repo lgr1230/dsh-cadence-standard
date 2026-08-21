@@ -1,4 +1,4 @@
-# cadence-standard preset (v4.13): pacing + safety.
+# cadence-standard preset (v4.14): pacing + safety.
 #
 # What remains: anchor first turn (0 tools + the only cap), monotonic
 # classification with F1 inbox-insert pre-classification (the FIRST task
@@ -87,13 +87,21 @@
     # phases either: the resident catalog is the surface from the start.
     # V4.8 (O1) — first-request output cap: splits the planning monolith
     # (session-24: 92k reasoning tokens in ONE request, 24.5 min, cache 0%,
-    # decision lock-in). V4.12: 32000 -> 64000 — a fuse, not a throttle; the
-    # model upgrade self-manages overthinking. V4.13: 64000 -> 24000 (session-30
-    # truncation). V4.13b (session-dcc6d859 review): 24000 -> 32000 — 24k truncated
-    # every "write-the-code-in-reasoning" request (3/3 turns cut, zero tools);
-    # 32k is the V4.8-calibrated value under which sessions 26/29 never
-    # truncated; auto-recovery (2×/session) is the backstop. Subagents exempt.
+    # decision lock-in). V4.14 (user decision): the V4.12-13 experiments
+    # (64000 -> 24000 -> 32000) are REVERTED — value stays 32000, the
+    # V4.8-V4.11 calibrated fuse under which sessions 26/28/29 never
+    # truncated; truncation is prevented by the restored anchor turn, not
+    # by shrinking this cap. Applies to the first TASK request (the warm-up
+    # request is capped by anchorCapMaxTokens). Subagents are exempt (V4.10).
     firstRequestMaxTokens: 32000
+    # V4.14 (user decision, 2026-08-22): warm-up anchor turn RESTORED —
+    # a fresh top-level session's FIRST request runs with zero tools +
+    # SIMPLE persona + 2048 cap, so the task request that follows acts
+    # immediately instead of burning the fuse drafting code inside reasoning
+    # (30号 / session-dcc6d859 / session-21bd3d46 truncated exactly so;
+    # V2.2 anchor held V4.4-V4.11 with zero truncations).
+    anchorFirstTurn: true
+    anchorCapMaxTokens: 2048
     # V4.8 (O2-A) — execution-phase narration steer (once, complex, at the
     # second tool call). Session-24: the V4.7 narration guide fired in the
     # planning request and never reached execution (iAm=0.06); 22号

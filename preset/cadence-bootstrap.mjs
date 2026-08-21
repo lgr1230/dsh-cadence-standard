@@ -29,11 +29,11 @@
  */
 
 import {
+  ANCHOR_TEXT,
   DL_ESCALATE,
-  STEER_RECOVER,
   applyPersona, blockMedian, countMarkers,
   detectDeadlock, effectiveClass,
-  extractText, isComplexTask, pendingInjections, personaFor,
+  extractText, isComplexTask, isFreshTopLevel, pendingInjections, personaFor,
   postCompaction, selfKillDetect,
   selfKillVetoMessage, sessionClass,
   userAskedRestart,
@@ -133,21 +133,26 @@ export function apply(ctx, config) {
       : new Set(),
     // V4.8 (O1): first REAL request output cap —splits the planning monolith
     // (session-24: 92k reasoning tokens in ONE request, 24.5 min, cache 0%).
-    // V4.12: 32000 -> 64000 — the model upgrade self-manages overthinking;
-    // the cap stays as a fuse, not a throttle. Subagents are exempt (V4.10).
-    // V4.13b (session-dcc6d859 review): 64000 -> 24000 -> 32000 — 24k truncated
-    // every "write-the-code-in-reasoning" request (3/3 turns cut); 32k is
-    // the V4.8-calibrated value under which sessions 26/29 never truncated.
+    // V4.14 (user decision): value stays 32000 (the V4.8-V4.11 calibrated
+    // fuse under which sessions 26/28/29 never truncated; the V4.12-13
+    // 64000/24000 experiments are reverted). With the anchor turn restored,
+    // this cap applies to the first TASK request (the warm-up request is
+    // capped by anchorCapMaxTokens instead). Subagents are exempt (V4.10).
     firstRequestMaxTokens: Number.isSafeInteger(config.firstRequestMaxTokens) && config.firstRequestMaxTokens > 0
       ? config.firstRequestMaxTokens : 32000,
     // V4.8 (O2-A): execution-phase narration steer (once, complex).
     narrationAdvisor: config.narrationAdvisor !== false,
-    // V4.13 (2026-08-22, session-30/31 review): truncation auto-recovery —
-    // up to 2× per session, a max-tokens turn/end whose TRUNCATED STEP had
-    // no tool calls gets a next-turn recovery message instead of waiting for
-    // the user's "继续". Goal sessions are NOT excluded (the goal driver
-    // disarms on max-tokens — no reservation to collide with).
-    autoRecover: config.autoRecover !== false,
+    // V4.14 (2026-08-22, user decision): warm-up anchor turn RESTORED (V2.2
+    // mechanism). A fresh top-level session's FIRST request runs with zero
+    // tools, the SIMPLE persona and a tiny 2048 cap — the second request
+    // then acts immediately instead of burning the whole fuse drafting code
+    // inside reasoning (30号/dcc6d859/21bd3d46 all truncated exactly so).
+    anchorFirstTurn: config.anchorFirstTurn !== false,
+    anchorText: typeof config.anchorText === 'string' && config.anchorText.length > 0
+      ? config.anchorText
+      : ANCHOR_TEXT,
+    anchorCapMaxTokens: Number.isSafeInteger(config.anchorCapMaxTokens) && config.anchorCapMaxTokens > 0
+      ? config.anchorCapMaxTokens : 2048,
   }
   const residentSet = new Set(cfg.residentTools)
 
@@ -164,22 +169,25 @@ export function apply(ctx, config) {
    *  after that seq (the user confirmed) —or the user's own message already
    *  asked for the restart/kill. */
   const killVetoed = new Map()
-  /** Session id -> count of truncation auto-recoveries fired (max 2/session). */
-  const recovered = new Map()
-  /** Session id -> true once the pre-step recovery backstop injected (once/session). */
-  const hinted = new Map()
 
   const stateOf = (session) => {
     let st = states.get(session.id)
     if (st === undefined) {
-      st = { complex: false, planMode: false, preClass: false }
+      st = { complex: false, planMode: false, preClass: false, anchorInjected: false, anchorZeroTools: false, anchorCap: false }
       states.set(session.id, st)
     }
     return st
   }
 
-  // ── F1 pre-classification (monotonic; plugin/runtime messages never
-  // classify) ────────────────────────────────────────────────────────────────
+  // ── F1 pre-classification + V4.14 anchor turn (one listener) ──────────────
+  // F1 (V4.2): the inbox insert lands BEFORE the task request is assembled,
+  // so the FIRST task request carries the complex persona + complex core.
+  // Monotonic; plugin/runtime messages never classify.
+  // Anchor (V2.2/V4.14): a FRESH top-level session's first user message gets
+  // a warm-up notice prepended into the next-turn inbox — the warm-up turn
+  // runs with zero tools + SIMPLE persona + 2048 cap; the task request that
+  // follows acts immediately. Anchor flags are consumed independently by
+  // assemble (zeroTools) and request (cap) — do NOT infer from events.
   ctx.on('agent/inbox/inserted', ({ agent, message }) => {
     if (agent !== undefined && agent.session !== undefined
       && message?.source?.kind === 'user') {
@@ -188,6 +196,26 @@ export function apply(ctx, config) {
         stateOf(agent.session).complex = true
         stateOf(agent.session).preClass = true
       }
+    }
+    if (!cfg.anchorFirstTurn) return
+    if (agent === undefined || agent.session === undefined) return
+    if (message?.source?.kind === 'plugin') return // never re-anchor on plugin messages
+    if (!isFreshTopLevel(agent)) return
+    const st = stateOf(agent.session)
+    if (st.anchorInjected) return // process-local idempotency for rapid inserts
+    st.anchorInjected = true
+    try {
+      agent.inbox.prepend('next-turn', {
+        id: `cadence-anchor-${seqToken()}`,
+        role: 'user',
+        content: [{ type: 'text', text: cfg.anchorText }],
+        source: { kind: 'plugin', plugin: 'cadence-bootstrap', form: 'notice', summary: 'cadence anchor turn' },
+      })
+      st.anchorZeroTools = true
+      st.anchorCap = true
+    } catch {
+      // Races: skip; the real message proceeds unanchored rather than blocked.
+      st.anchorInjected = false
     }
   })
 
@@ -221,22 +249,41 @@ export function apply(ctx, config) {
     if ((agent.session?.header?.delegationDepth ?? 0) > 0) {
       return { ...assembled, sections, tools: assembled.tools.filter((t) => SUBAGENT_SURFACE.has(t.name)) }
     }
-    // V4.12: no anchor turn, no narrow first-task surface, no promotion
-    // phases — the RESIDENT catalog is the surface from the FIRST request
-    // (simple and complex alike; V4.10 gave complex the resident surface
-    // first, V4.12 extends it everywhere and removes the phase machinery).
-    // postCompaction (R2) also converges to the same surface, so the branch
-    // is gone too.
+    // V4.14: warm-up anchor turn — zero tools + SIMPLE persona (the
+    // "act directly" warm-up contract; F1's complex state must NOT pull the
+    // warm-up into planning). Consumed once; the next assemble returns the
+    // resident surface.
+    if (st.anchorInjected && st.anchorZeroTools) {
+      st.anchorZeroTools = false
+      return { ...assembled, sections: applyPersona(assembled.sections, personaFor(false)), tools: [] }
+    }
+    // V4.12 (kept): no narrow first-task surface, no promotion phases — the
+    // RESIDENT catalog is the surface from the first TASK request (simple
+    // and complex alike). postCompaction (R2) also converges to the same
+    // surface, so the branch is gone too.
     return { ...assembled, sections, tools: keep(residentSet) }
   })
 
-  // ── request listener: V4.8 first-request cap (V4.12: 64k fuse) ────────────
+  // ── request listener: warm-up anchor cap (2048) then first-task cap (32k)
+  // V4.14: the anchor turn's request is capped by anchorCapMaxTokens; the
+  // NEXT request (the first task request) gets firstRequestMaxTokens.
+  // Non-warm-up requests that would inherit the tiny cap are released (a
+  // request that caps at 2048 without an anchor flag is the warm-up's
+  // persisted header leaking into the task request — drop it).
   ctx.on('agent/request', async (payload, next) => {
     const resolved = await next()
     const agent = payload.agent
     if (agent === undefined) return resolved
     const session = agent.session
     const st = stateOf(session)
+    if (st.anchorInjected && st.anchorCap) {
+      st.anchorCap = false
+      return { ...resolved, maxTokens: cfg.anchorCapMaxTokens }
+    }
+    if (resolved.maxTokens === cfg.anchorCapMaxTokens) {
+      const { maxTokens: _drop, ...rest } = resolved
+      return rest
+    }
     if (!st.firstCapped && (agent.session.header?.delegationDepth ?? 0) === 0) {
       st.firstCapped = true
       return { ...resolved, maxTokens: cfg.firstRequestMaxTokens }
@@ -299,28 +346,6 @@ export function apply(ctx, config) {
         cfg,
         nowMs: Date.now(),
       })
-      // V4.13c backstop: if the LAST turn was a zero-tool max-tokens
-      // truncation and the entering batch does NOT already carry the
-      // auto-recovery message (the agent/status auto path won), inject the
-      // recovery steer once per session — the manual "继续" path otherwise
-      // re-burns the fuse (live session: turn2 after "继续" cut 2/2 again).
-      if (cfg.autoRecover && !hinted.has(agent.session.id)
-        && !messages.some((m) => String(m?.content?.[0]?.text ?? '').includes('Cadence auto-recovery'))) {
-        const ev2 = Array.isArray(agent.session.events) ? agent.session.events : []
-        const last2 = ev2.at(-1)
-        if (last2?.type === 'turn/end' && last2.data?.reason?.kind === 'max-tokens') {
-          const turn2 = last2.data?.turn
-          let lss = -Infinity
-          for (const e of ev2) {
-            if (e.type === 'step/start' && e.data?.turn === turn2 && typeof e.seq === 'number' && e.seq > lss) lss = e.seq
-          }
-          if (lss !== -Infinity && !ev2.some((e) => e.type === 'tool/call' && e.data?.turn === turn2
-            && typeof e.seq === 'number' && e.seq > lss)) {
-            injections.push({ marker: null, text: STEER_RECOVER })
-            hinted.set(agent.session.id, true)
-          }
-        }
-      }
       if (injections.length === 0) {
         return messages === decision.messages ? decision : { ...decision, messages }
       }
@@ -367,57 +392,6 @@ export function apply(ctx, config) {
     return { kind: 'deny', reason: selfKillVetoMessage(process.pid) }
   })
 
-  // ── V4.13 (2026-08-22, session-30/31 review): truncation auto-recovery ────
-  // A max-tokens turn/end whose TRUNCATED STEP produced no tool calls is a
-  // pure-thinking blowout (session-30: 64k in one block; session-dcc6d859: 24k in
-  // every pre-write request, 3/3 turns cut). Recovery fires up to 2× per
-  // session (the burn-every-request pattern outlasts a single recovery).
-  // The guard is step-level (the turn's LAST step/start onward), not
-  // turn-level — session-dcc6d859's turn1 ran env-probe + create_goal tools in
-  // step1 but the cut happened in a zero-tool step2, and the turn-level
-  // guard skipped it. Goal sessions are NOT excluded: the goal driver
-  // disarms on max-tokens (no reservation to collide with), and with G1
-  // guiding goal creation, goal sessions would otherwise never recover.
-  // V4.13c: triggered from `agent/status` (idle), NOT `session/event` —
-  // session/event is published on the root/session service ctx, which an
-  // agent-scoped preset plugin does not receive (verified live: the first
-  // V4.13b session cut 2/2 turns with zero auto-recoveries and the user had
-  // to "继续" both times). agent/status shares the loopCtx dispatch channel
-  // with pre-step (empirically reachable — narration/direct injections
-  // work), and the goal driver drives rounds from the same idle event.
-  // Every failure degrades to the manual one-click recovery footer.
-  ctx.on('agent/status', ({ agent, status }) => {
-    if (!cfg.autoRecover || status !== 'idle') return
-    const session = agent?.session
-    if (session === undefined) return
-    const id = session.id
-    const count = recovered.get(id) ?? 0
-    if (count >= 2) return
-    const ev = Array.isArray(session.events) ? session.events : []
-    const last = ev.at(-1)
-    if (last?.type !== 'turn/end' || last.data?.reason?.kind !== 'max-tokens') return
-    const turn = last.data?.turn
-    // The truncated step = the turn's last step/start boundary onward.
-    let lastStepSeq = -Infinity
-    for (const e of ev) {
-      if (e.type === 'step/start' && e.data?.turn === turn && typeof e.seq === 'number') {
-        if (e.seq > lastStepSeq) lastStepSeq = e.seq
-      }
-    }
-    if (lastStepSeq === -Infinity) return // no step boundary: abnormal, do not inject
-    if (ev.some((e) => e.type === 'tool/call' && e.data?.turn === turn
-      && typeof e.seq === 'number' && e.seq > lastStepSeq)) return
-    try {
-      agent.inbox.prepend('next-turn', {
-        id: `cadence-recover-${seqToken()}`,
-        role: 'user',
-        source: { kind: 'plugin', plugin: 'cadence-bootstrap' },
-        content: [{ type: 'text', text: STEER_RECOVER }],
-      })
-      recovered.set(id, count + 1)
-    } catch { /* degrade to the manual recovery footer */ }
-  })
-
   // ── V4.9: tool_search REMOVED (measured: 17 calls across 7 sessions,
   // zero real successes —sessions 19/25 wasted 3/14 calls searching for
   // tools that were never in the catalog; the direct-call path (session 20
@@ -439,7 +413,7 @@ export function apply(ctx, config) {
       const steps = ev.filter((e) => e.type === 'step/start').length
       const calls = ev.filter((e) => e.type === 'tool/call').length
       return [
-        `build=v4.13`,
+        `build=v4.14`,
         `complexity=${st.complex ? 'complex' : 'simple'}`,
         `preClass=${st.preClass ? 'yes' : 'no'}`,
         `phase=resident`, // V4.12: no promotion phases
