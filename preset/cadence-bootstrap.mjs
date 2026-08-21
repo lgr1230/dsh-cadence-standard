@@ -352,7 +352,7 @@ export function apply(ctx, config) {
       const steps = ev.filter((e) => e.type === 'step/start').length
       const calls = ev.filter((e) => e.type === 'tool/call').length
       return [
-        `build=v4.9`,
+        `build=v4.12`,
         `complexity=${st.complex ? 'complex' : 'simple'}`,
         `preClass=${st.preClass ? 'yes' : 'no'}`,
         `phase=resident`, // V4.12: no promotion phases
