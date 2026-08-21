@@ -166,6 +166,8 @@ export function apply(ctx, config) {
   const killVetoed = new Map()
   /** Session id -> count of truncation auto-recoveries fired (max 2/session). */
   const recovered = new Map()
+  /** Session id -> true once the pre-step recovery backstop injected (once/session). */
+  const hinted = new Map()
 
   const stateOf = (session) => {
     let st = states.get(session.id)
@@ -297,6 +299,28 @@ export function apply(ctx, config) {
         cfg,
         nowMs: Date.now(),
       })
+      // V4.13c backstop: if the LAST turn was a zero-tool max-tokens
+      // truncation and the entering batch does NOT already carry the
+      // auto-recovery message (the agent/status auto path won), inject the
+      // recovery steer once per session — the manual "继续" path otherwise
+      // re-burns the fuse (live session: turn2 after "继续" cut 2/2 again).
+      if (cfg.autoRecover && !hinted.has(agent.session.id)
+        && !messages.some((m) => String(m?.content?.[0]?.text ?? '').includes('Cadence auto-recovery'))) {
+        const ev2 = Array.isArray(agent.session.events) ? agent.session.events : []
+        const last2 = ev2.at(-1)
+        if (last2?.type === 'turn/end' && last2.data?.reason?.kind === 'max-tokens') {
+          const turn2 = last2.data?.turn
+          let lss = -Infinity
+          for (const e of ev2) {
+            if (e.type === 'step/start' && e.data?.turn === turn2 && typeof e.seq === 'number' && e.seq > lss) lss = e.seq
+          }
+          if (lss !== -Infinity && !ev2.some((e) => e.type === 'tool/call' && e.data?.turn === turn2
+            && typeof e.seq === 'number' && e.seq > lss)) {
+            injections.push({ marker: null, text: STEER_RECOVER })
+            hinted.set(agent.session.id, true)
+          }
+        }
+      }
       if (injections.length === 0) {
         return messages === decision.messages ? decision : { ...decision, messages }
       }
@@ -354,16 +378,25 @@ export function apply(ctx, config) {
   // guard skipped it. Goal sessions are NOT excluded: the goal driver
   // disarms on max-tokens (no reservation to collide with), and with G1
   // guiding goal creation, goal sessions would otherwise never recover.
+  // V4.13c: triggered from `agent/status` (idle), NOT `session/event` —
+  // session/event is published on the root/session service ctx, which an
+  // agent-scoped preset plugin does not receive (verified live: the first
+  // V4.13b session cut 2/2 turns with zero auto-recoveries and the user had
+  // to "继续" both times). agent/status shares the loopCtx dispatch channel
+  // with pre-step (empirically reachable — narration/direct injections
+  // work), and the goal driver drives rounds from the same idle event.
   // Every failure degrades to the manual one-click recovery footer.
-  ctx.on('session/event', (session, event) => {
-    if (!cfg.autoRecover) return
-    if (event?.type !== 'turn/end' || event.data?.reason?.kind !== 'max-tokens') return
-    const id = session?.id
-    if (id === undefined) return
+  ctx.on('agent/status', ({ agent, status }) => {
+    if (!cfg.autoRecover || status !== 'idle') return
+    const session = agent?.session
+    if (session === undefined) return
+    const id = session.id
     const count = recovered.get(id) ?? 0
     if (count >= 2) return
-    const ev = Array.isArray(session?.events) ? session.events : []
-    const turn = event.data?.turn
+    const ev = Array.isArray(session.events) ? session.events : []
+    const last = ev.at(-1)
+    if (last?.type !== 'turn/end' || last.data?.reason?.kind !== 'max-tokens') return
+    const turn = last.data?.turn
     // The truncated step = the turn's last step/start boundary onward.
     let lastStepSeq = -Infinity
     for (const e of ev) {
@@ -374,8 +407,6 @@ export function apply(ctx, config) {
     if (lastStepSeq === -Infinity) return // no step boundary: abnormal, do not inject
     if (ev.some((e) => e.type === 'tool/call' && e.data?.turn === turn
       && typeof e.seq === 'number' && e.seq > lastStepSeq)) return
-    const agent = recentAgents.get(id) ?? agents.get(id)
-    if (agent === undefined) return
     try {
       agent.inbox.prepend('next-turn', {
         id: `cadence-recover-${seqToken()}`,

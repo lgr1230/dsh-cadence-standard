@@ -758,17 +758,23 @@ const simpleText = '写个 hello 脚本'
     core.STEER_RECOVER.includes('Cadence auto-recovery') && core.STEER_RECOVER.includes('FIRST minimal action'), 'recover text')
 }
 
-// 2A listener (V4.13b): step-level guard + 2×/session cap + goal sessions allowed.
+// 2A listener (V4.13c): driven by `agent/status` idle — session/event is
+// published on the root/session ctx which an agent-scoped preset plugin does
+// NOT receive (live-verified: V4.13b cut 2/2 turns with zero recoveries).
+// NOTE: this fake harness cannot verify event REACHABILITY — only logic —
+// so the channel choice rests on the live probe (agent/status shares the
+// loopCtx dispatch with pre-step, empirically reachable).
 {
   const hh = makeHarness()
-  const s = { id: 's13a', events: [{ type: 'step/start', seq: 1, data: { turn: 1, step: 1 } }], header: { delegationDepth: 0 } }
+  const s = { id: 's13a', events: [], header: { delegationDepth: 0 } }
   const agent = hh.agentOf(s)
   await hh.h('system-prompt/assemble')[0](null, { agent }, async () => ({ sections: [], tools: [] }))
   const prepended = []
   agent.inbox.prepend = (_t, m) => prepended.push(m)
   const fire = (turn) => {
-    s.events.push({ type: 'step/start', seq: 100 + turn, data: { turn, step: 1 } })
-    hh.h('session/event').forEach((l) => l(s, { type: 'turn/end', data: { turn, reason: { kind: 'max-tokens' } } }))
+    s.events.push({ type: 'step/start', seq: 100 + turn * 2, data: { turn, step: 1 } })
+    s.events.push({ type: 'turn/end', seq: 101 + turn * 2, data: { turn, reason: { kind: 'max-tokens' } } })
+    hh.h('agent/status').forEach((l) => l({ agent, status: 'idle' }))
   }
   fire(1)
   check('2A: max-tokens zero-tool step prepends recovery',
@@ -791,6 +797,7 @@ const simpleText = '写个 hello 脚本'
       { type: 'step/start', seq: 1, data: { turn: 1, step: 1 } },
       { type: 'tool/call', seq: 2, data: { turn: 1, name: 'create_goal', arguments: '{}' } },
       { type: 'step/start', seq: 3, data: { turn: 1, step: 2 } },
+      { type: 'turn/end', seq: 4, data: { turn: 1, reason: { kind: 'max-tokens' } } },
     ],
     header: { delegationDepth: 0 },
   }
@@ -799,7 +806,7 @@ const simpleText = '写个 hello 脚本'
   const prepended = []
   agent.inbox.prepend = (_t, m) => prepended.push(m)
   // session-dcc6d859 shape: tools in step1, truncation in zero-tool step2 → recover.
-  hh.h('session/event').forEach((l) => l(s, { type: 'turn/end', data: { turn: 1, reason: { kind: 'max-tokens' } } }))
+  hh.h('agent/status').forEach((l) => l({ agent, status: 'idle' }))
   check('2A: tools before the truncated step do not block recovery (session-dcc6d859)', prepended.length === 1, `n=${prepended.length}`)
 }
 {
@@ -809,6 +816,7 @@ const simpleText = '写个 hello 脚本'
     events: [
       { type: 'step/start', seq: 1, data: { turn: 1, step: 1 } },
       { type: 'tool/call', seq: 2, data: { turn: 1, name: 'write', arguments: '{}' } },
+      { type: 'turn/end', seq: 3, data: { turn: 1, reason: { kind: 'max-tokens' } } },
     ],
     header: { delegationDepth: 0 },
   }
@@ -816,7 +824,7 @@ const simpleText = '写个 hello 脚本'
   await hh.h('system-prompt/assemble')[0](null, { agent }, async () => ({ sections: [], tools: [] }))
   const prepended = []
   agent.inbox.prepend = (_t, m) => prepended.push(m)
-  hh.h('session/event').forEach((l) => l(s, { type: 'turn/end', data: { turn: 1, reason: { kind: 'max-tokens' } } }))
+  hh.h('agent/status').forEach((l) => l({ agent, status: 'idle' }))
   check('2A: tool call inside the truncated step blocks recovery', prepended.length === 0, `n=${prepended.length}`)
 }
 {
@@ -826,6 +834,7 @@ const simpleText = '写个 hello 脚本'
     events: [
       { type: 'step/start', seq: 1, data: { turn: 1, step: 1 } },
       { type: 'user/message', seq: 2, data: { source: { kind: 'goal', goalId: 'g1', revision: 1, round: 1 }, content: [{ type: 'text', text: 'round' }] } },
+      { type: 'turn/end', seq: 3, data: { turn: 1, reason: { kind: 'max-tokens' } } },
     ],
     header: { delegationDepth: 0 },
   }
@@ -833,28 +842,51 @@ const simpleText = '写个 hello 脚本'
   await hh.h('system-prompt/assemble')[0](null, { agent }, async () => ({ sections: [], tools: [] }))
   const prepended = []
   agent.inbox.prepend = (_t, m) => prepended.push(m)
-  hh.h('session/event').forEach((l) => l(s, { type: 'turn/end', data: { turn: 1, reason: { kind: 'max-tokens' } } }))
+  hh.h('agent/status').forEach((l) => l({ agent, status: 'idle' }))
   check('2A: goal session recovers too (driver disarmed, no collision)', prepended.length === 1, `n=${prepended.length}`)
 }
 {
   const hh = makeHarness({ autoRecover: false })
-  const s = { id: 's13e', events: [{ type: 'step/start', seq: 1, data: { turn: 1, step: 1 } }], header: { delegationDepth: 0 } }
+  const s = { id: 's13e', events: [], header: { delegationDepth: 0 } }
   const agent = hh.agentOf(s)
   await hh.h('system-prompt/assemble')[0](null, { agent }, async () => ({ sections: [], tools: [] }))
   const prepended = []
   agent.inbox.prepend = (_t, m) => prepended.push(m)
-  hh.h('session/event').forEach((l) => l(s, { type: 'turn/end', data: { turn: 1, reason: { kind: 'max-tokens' } } }))
+  s.events.push({ type: 'step/start', seq: 1, data: { turn: 1, step: 1 } })
+  s.events.push({ type: 'turn/end', seq: 2, data: { turn: 1, reason: { kind: 'max-tokens' } } })
+  hh.h('agent/status').forEach((l) => l({ agent, status: 'idle' }))
   check('2A: autoRecover off → no auto-recovery', prepended.length === 0, `n=${prepended.length}`)
 }
 {
   const hh = makeHarness()
-  const s = { id: 's13f', events: [{ type: 'step/start', seq: 1, data: { turn: 1, step: 1 } }], header: { delegationDepth: 0 } }
+  const s = { id: 's13f', events: [], header: { delegationDepth: 0 } }
   const agent = hh.agentOf(s)
   await hh.h('system-prompt/assemble')[0](null, { agent }, async () => ({ sections: [], tools: [] }))
   const prepended = []
   agent.inbox.prepend = (_t, m) => prepended.push(m)
-  hh.h('session/event').forEach((l) => l(s, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } }))
+  s.events.push({ type: 'step/start', seq: 1, data: { turn: 1, step: 1 } })
+  s.events.push({ type: 'turn/end', seq: 2, data: { turn: 1, reason: { kind: 'completed' } } })
+  hh.h('agent/status').forEach((l) => l({ agent, status: 'idle' }))
   check('2A: completed turn → no auto-recovery', prepended.length === 0, `n=${prepended.length}`)
+}
+
+// 2A pre-step backstop: a manual "继续" after a zero-tool truncation gets the
+// recovery steer once (the auto path may be unreachable; the backstop keeps
+// the next request from re-burning the fuse).
+{
+  const hh = makeHarness()
+  const s = { id: 's13g', events: [
+    { type: 'step/start', seq: 1, data: { turn: 1, step: 1 } },
+    { type: 'turn/end', seq: 2, data: { turn: 1, reason: { kind: 'max-tokens' } } },
+  ], header: { delegationDepth: 0 } }
+  const agent = hh.agentOf(s)
+  await hh.h('system-prompt/assemble')[0](null, { agent }, async () => ({ sections: [], tools: [] }))
+  const d1 = await hh.h('agent/pre-step')[0]({}, async () => ({ kind: 'enter', messages: [userMsg('u2', '继续')] }))
+  check('2A backstop: manual continue after zero-tool truncation gets recovery steer',
+    d1.messages.some((m) => m.content?.[0]?.text?.includes('Cadence auto-recovery')), 'backstop')
+  const d2 = await hh.h('agent/pre-step')[0]({}, async () => ({ kind: 'enter', messages: [userMsg('u3', '继续')] }))
+  check('2A backstop: once per session',
+    !d2.messages.some((m) => m.content?.[0]?.text?.includes('Cadence auto-recovery')), 'once')
 }
 
 console.log(results.join('\n'))
